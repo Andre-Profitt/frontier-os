@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/adapter-result.schema.json",
+  "title": "FrontierOS Adapter Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["invocationId", "adapterId", "command", "status", "finishedAt"],
+  "properties": {
+    "invocationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "adapterId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "command": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "partial", "blocked", "requires_approval", "failed"]
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "observedState": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "url",
+              "trace",
+              "screenshot",
+              "dom_snapshot",
+              "api_response",
+              "console_capture"
+            ]
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sideEffects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "summary"],
+        "properties": {
+          "class": {
+            "type": "string",
+            "enum": [
+              "auth_change",
+              "billable_action",
+              "deploy",
+              "destructive_action",
+              "external_message",
+              "financial_action",
+              "local_write",
+              "none",
+              "pr_open",
+              "repo_write",
+              "shared_write",
+              "ticket_write"
+            ]
+          },
+          "target": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["not_run", "passed", "failed"]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "suggestedNextActions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

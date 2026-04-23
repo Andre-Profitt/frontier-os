@@ -1,0 +1,104 @@
+{
+  "graphId": "wg_azure_stop_demo_v1",
+  "version": "v1",
+  "goal": "Demo: stop an Azure VM. Two nodes — n1 previews via azure stop-resource propose (class-2, no mutation), n2 applies via azure stop-resource apply (class-3 destructive). Class-3 gate + Ghost Shift always-refuses-destructive proof point.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-19T00:00:00Z",
+  "priority": "normal",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 1,
+    "requireHumanFor": [
+      "destructive_action",
+      "deploy",
+      "external_message",
+      "financial_action",
+      "auth_change",
+      "billable_action"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 300,
+    "maxToolCalls": 4,
+    "maxCostUsd": 0.5
+  },
+  "labels": ["demo", "azure", "destructive", "class-3"],
+  "successCriteria": [
+    "n1_propose returns status=success with applyWould.url set",
+    "n2_apply gated as awaiting_approval (class-3 > default)",
+    "Ghost Shift rejects the graph with class_too_high @ n2_apply AND dangerous_side_effect destructive_action"
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1_propose",
+      "kind": "browser_task",
+      "title": "Preview VM deallocate (no mutation)",
+      "description": "Propose-mode call to azure stop-resource. Surfaces the ARM POST URL that apply would hit, plus the current PowerState/displayStatus of the VM.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [],
+      "allowedTools": ["azure.stop-resource"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["policy", "trace_grade"]
+      },
+      "sideEffects": ["none"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "azure",
+            "command": "stop-resource",
+            "mode": "propose",
+            "arguments": {
+              "subscriptionId": "11111111-2222-3333-4444-555555555555",
+              "resourceGroupName": "demo-rg",
+              "vmName": "demo-vm-01"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n2_apply",
+      "kind": "browser_task",
+      "title": "Apply VM deallocate (class-3 destructive)",
+      "description": "Apply-mode POST .../deallocate via ARM REST. Class-3: Ghost Shift must refuse; interactive runs must clear a human approval gate.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 3,
+      "dependencies": ["n1_propose"],
+      "allowedTools": ["azure.stop-resource"],
+      "verifierPolicy": {
+        "mode": "required_before_side_effect",
+        "checks": ["policy", "trace_grade"]
+      },
+      "sideEffects": ["destructive_action"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "azure",
+            "command": "stop-resource",
+            "mode": "apply",
+            "arguments": {
+              "subscriptionId": "11111111-2222-3333-4444-555555555555",
+              "resourceGroupName": "demo-rg",
+              "vmName": "demo-vm-01",
+              "stopMode": "deallocate"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "adapterId": "kaggle",
+  "version": "v1",
+  "displayName": "Kaggle (Python CLI wrapper)",
+  "owner": "frontier-os",
+  "summary": "Shells out to the official Kaggle Python CLI (kaggle-node is dead). Reads creds from ~/.kaggle/kaggle.json. Read listings + dataset download + class-2 submit-competition. Propose mode previews submissions; apply mode writes to the leaderboard.",
+  "transport": "native_cli",
+  "modes": ["read", "propose", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 1
+  },
+  "commands": [
+    {
+      "command": "list-kernels",
+      "summary": "List recent kernels visible to the authenticated user. --mine defaults true.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["kernel_count_present"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-competitions",
+      "summary": "List competitions (category filter optional).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["competition_count_present"],
+      "undoSupported": false
+    },
+    {
+      "command": "kernel-status",
+      "summary": "Check status of a kernel (user/slug).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["status_nonempty"],
+      "undoSupported": false
+    },
+    {
+      "command": "download-dataset",
+      "summary": "Download a dataset slug to a local path. Writes a zip locally.",
+      "supportedModes": ["apply"],
+      "sideEffectClass": "local_write",
+      "verifierHints": ["file_exists"],
+      "undoSupported": false
+    },
+    {
+      "command": "whoami",
+      "summary": "Return the authenticated username + config path (validates creds).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["username_nonempty"],
+      "undoSupported": false
+    },
+    {
+      "command": "submit-competition",
+      "summary": "Submit a file to a Kaggle competition via `kaggle competitions submit`. Propose mode previews the argv; apply mode writes to the leaderboard. Class-2 — must be gated by work-graph approvalClass ≥ 2 or rejected by Ghost Shift.",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

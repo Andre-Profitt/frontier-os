@@ -1,0 +1,38 @@
+{
+  "adapterId": "research",
+  "version": "v1",
+  "displayName": "Research (orchestrator-worker via Claude Code)",
+  "owner": "frontier-os",
+  "summary": "Long-horizon research primitive. Ports the Anthropic multi-agent-research-system pattern (decomposer → N parallel workers → synthesizer) on top of the local Claude Code CLI. Every worker gets its own context window; artifacts land in ~/.frontier/research/<sessionId>/.",
+  "transport": "native_cli",
+  "modes": ["read", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 1
+  },
+  "commands": [
+    {
+      "command": "run-survey",
+      "summary": "Run a literature/web survey with an orchestrator-worker loop. Returns a synthesized brief + per-worker artifacts.",
+      "supportedModes": ["apply"],
+      "sideEffectClass": "billable_action",
+      "verifierHints": ["brief_nonempty", "worker_artifacts_present"],
+      "undoSupported": false
+    },
+    {
+      "command": "monitor-topic",
+      "summary": "Load a topic from examples/research/watchlist.json and run the survey against its queries.",
+      "supportedModes": ["apply"],
+      "sideEffectClass": "billable_action",
+      "verifierHints": ["brief_nonempty"],
+      "undoSupported": false
+    },
+    {
+      "command": "brief",
+      "summary": "List recent brief sessions, or show one by sessionId.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["brief_exists"],
+      "undoSupported": false
+    }
+  ]
+}

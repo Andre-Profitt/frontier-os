@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/command-envelope.schema.json",
+  "title": "FrontierOS Command Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "commandId",
+    "version",
+    "intent",
+    "requestedAt",
+    "actor",
+    "surface",
+    "payload"
+  ],
+  "properties": {
+    "commandId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+$"
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requestedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "traceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "actorType"],
+      "properties": {
+        "actorId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actorType": {
+          "type": "string",
+          "enum": ["human", "agent", "service", "device"]
+        },
+        "tenantId": {
+          "type": "string"
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "origin"],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "siri_shortcut",
+            "apple_app_intent",
+            "mobile_app",
+            "menu_bar",
+            "web",
+            "api",
+            "automation"
+          ]
+        },
+        "origin": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deviceId": {
+          "type": "string"
+        }
+      }
+    },
+    "approvalClass": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3]
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "requestedOutputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "spoken",
+          "state",
+          "artifact",
+          "decision",
+          "patch",
+          "summary",
+          "approval"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowSideEffects": {
+          "type": "boolean"
+        },
+        "requireVerification": {
+          "type": "boolean"
+        },
+        "maxRuntimeSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9
+        },
+        "retryBackoffMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "adapterId": "browser",
+  "version": "v1",
+  "displayName": "Browser Adapter",
+  "owner": "frontier-os",
+  "summary": "Active-session browser control over Chrome or Atlas via CDP.",
+  "transport": "cdp",
+  "modes": [
+    "read",
+    "propose",
+    "apply",
+    "undo"
+  ],
+  "approvalDefaults": {
+    "defaultClass": 1,
+    "billableClass": 2,
+    "destructiveClass": 2
+  },
+  "commands": [
+    {
+      "command": "list-tabs",
+      "summary": "Enumerate available tabs and metadata.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "current-tab",
+      "summary": "Return normalized state for the active tab.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "inspect-dom",
+      "summary": "Capture DOM and accessibility tree snapshots for the target page.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "inspect-network",
+      "summary": "Capture recent network activity and response metadata.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "run-script",
+      "summary": "Execute a bounded in-page script and return structured output.",
+      "supportedModes": [
+        "read",
+        "propose",
+        "apply"
+      ],
+      "sideEffectClass": "shared_write",
+      "verifierHints": [
+        "policy",
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "click-element",
+      "summary": "Perform a verified element click on the active page.",
+      "supportedModes": [
+        "apply"
+      ],
+      "sideEffectClass": "shared_write",
+      "verifierHints": [
+        "policy",
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "enter-text",
+      "summary": "Perform verified text entry into an editable page element.",
+      "supportedModes": [
+        "apply"
+      ],
+      "sideEffectClass": "shared_write",
+      "verifierHints": [
+        "policy",
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "select-option",
+      "summary": "Perform verified option selection on a native select or custom combobox/listbox control.",
+      "supportedModes": [
+        "apply"
+      ],
+      "sideEffectClass": "shared_write",
+      "verifierHints": [
+        "policy",
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "navigate",
+      "summary": "Navigate the target tab to a URL and verify the destination state.",
+      "supportedModes": [
+        "apply"
+      ],
+      "sideEffectClass": "shared_write",
+      "verifierHints": [
+        "policy",
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "capture-screenshot",
+      "summary": "Capture a screenshot artifact for state verification.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    }
+  ]
+}

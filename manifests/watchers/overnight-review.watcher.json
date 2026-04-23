@@ -1,0 +1,39 @@
+{
+  "watcherId": "overnight-review",
+  "version": "v1",
+  "summary": "Summarize the previous operating window, identify drift, and propose next actions.",
+  "schedule": {
+    "mode": "cron",
+    "cron": "0 7 * * *"
+  },
+  "inputs": [
+    "alerts",
+    "memory",
+    "work_graphs",
+    "adapter_results"
+  ],
+  "trigger": {
+    "condition": "Run at the start of the day and when explicitly invoked for a review window.",
+    "dedupeKey": "daily-review"
+  },
+  "actionPlan": [
+    {
+      "stepId": "collect-signals",
+      "adapterId": "browser",
+      "command": "list-tabs",
+      "mode": "read"
+    },
+    {
+      "stepId": "draft-review",
+      "adapterId": "browser",
+      "command": "capture-screenshot",
+      "mode": "read"
+    }
+  ],
+  "policy": {
+    "approvalClass": 0,
+    "notifyBeforeAct": false,
+    "maxActionsPerDay": 1,
+    "killSwitchFile": "state/watchers/overnight-review.disabled"
+  }
+}

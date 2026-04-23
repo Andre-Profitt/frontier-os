@@ -1,0 +1,22 @@
+{
+  "id": "salesforce-api",
+  "name": "Salesforce API App",
+  "root": "/Users/test/code/apps/salesforce-api",
+  "kind": "application",
+  "priority": "high",
+  "owner": "Andre Profitt",
+  "riskClass": 2,
+  "commands": {},
+  "services": [],
+  "ports": [],
+  "envFiles": ["/Users/test/code/apps/salesforce-api/.env"],
+  "secretsPolicy": {
+    "summary": "Salesforce auth stays in sf CLI/local env; manifests only identify the project.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["salesforce-api", "salesforce"],
+  "notes": [
+    "Verification and smoke commands are intentionally omitted until registry discovery identifies a safe non-deploy gate.",
+    "Do not run dashboard deploy flows from registry status."
+  ]
+}

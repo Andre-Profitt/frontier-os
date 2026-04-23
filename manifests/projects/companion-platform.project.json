@@ -1,0 +1,52 @@
+{
+  "id": "companion-platform",
+  "name": "Companion Platform",
+  "root": "/Users/test/code/platform/companion-platform",
+  "kind": "platform",
+  "priority": "high",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {
+    "verify": {
+      "summary": "Repository pre-commit verification for runtime, connectors, research, and Apple layers.",
+      "argv": ["make", "verify"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 600
+    },
+    "dev": {
+      "summary": "Run the local runtime API.",
+      "argv": ["make", "serve-runtime"],
+      "approvalClass": 1,
+      "sideEffectClass": "local_write"
+    }
+  },
+  "services": [
+    {
+      "id": "runtime-api",
+      "label": "Companion runtime API",
+      "kind": "http",
+      "required": false,
+      "processPattern": "runtime.buildline_cli serve",
+      "port": 8765
+    }
+  ],
+  "ports": [
+    {
+      "label": "runtime API",
+      "port": 8765,
+      "protocol": "tcp",
+      "required": false
+    }
+  ],
+  "envFiles": ["/Users/test/code/platform/companion-platform/.env"],
+  "secretsPolicy": {
+    "summary": "Connector credentials stay in ignored local env/runtime files or platform credential stores.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["companion-platform", "siri", "apple-companion"],
+  "notes": [
+    "Siri Gateway and Apple companion work belong here unless Frontier registry integration is the explicit task.",
+    "TestFlight/deploy targets require explicit approval and are not part of read-only status."
+  ]
+}

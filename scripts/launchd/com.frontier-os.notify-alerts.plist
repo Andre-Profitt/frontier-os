@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.frontier-os.notify-alerts</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/test/frontier-os/scripts/notify-alerts.sh</string>
+    <string>--min-severity</string>
+    <string>medium</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/test/Library/Logs/frontier-os/notify-alerts.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/test/Library/Logs/frontier-os/notify-alerts.err.log</string>
+</dict>
+</plist>

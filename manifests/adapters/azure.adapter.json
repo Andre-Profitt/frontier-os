@@ -1,0 +1,54 @@
+{
+  "adapterId": "azure",
+  "version": "v1",
+  "displayName": "Azure Adapter",
+  "owner": "frontier-os",
+  "summary": "Subscription, resource-group, and resource queries via @azure/arm-* SDKs with `az` CLI fallback for whoami. Class-3 `stop-resource` deallocates VMs via ARM REST; propose previews, apply posts — Ghost Shift always refuses (destructive_action).",
+  "transport": "native_cli",
+  "modes": ["read", "propose", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 0
+  },
+  "commands": [
+    {
+      "command": "whoami",
+      "summary": "Return the active Azure account identity (user, tenant, subscription) via `az account show`, falling back to DefaultAzureCredential.getToken if the az CLI is unavailable.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-subscriptions",
+      "summary": "List all Azure subscriptions visible to the authenticated credential with id, displayName, state, and tenantId.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-resource-groups",
+      "summary": "List resource groups in the specified subscription (arguments.subscriptionId or AZURE_SUBSCRIPTION_ID) with name, location, and tags.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-resources",
+      "summary": "List Azure resources subscription-wide or scoped to arguments.resourceGroupName; returns id, name, type, location, and tags.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "stop-resource",
+      "summary": "Deallocate an Azure VM (arguments.subscriptionId+resourceGroupName+vmName, stopMode=\"deallocate\"|\"power-off\"). Propose previews the POST URL + VM state; apply issues POST .../deallocate via ARM REST. Class-3 destructive — must be gated by work-graph approvalClass ≥ 3; Ghost Shift always refuses.",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "destructive_action",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

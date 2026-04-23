@@ -1,0 +1,141 @@
+{
+  "graphId": "wg_ledger_self_audit_v1",
+  "version": "v1",
+  "goal": "Self-audit: summarize the Frontier OS ledger state, require class-2 approval, dispatch a completion notice. Runs without Chrome or external creds.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-18T22:00:00Z",
+  "priority": "normal",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 0,
+    "requireHumanFor": []
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 120,
+    "maxToolCalls": 10
+  },
+  "labels": ["demo", "self-audit", "phase-6"],
+  "successCriteria": [
+    "Ledger stats captured in a node payload.",
+    "Approval node gates correctly on defaultClass vs. --auto-approve.",
+    "Dispatch node fires only after approval is granted."
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1_stats",
+      "kind": "research",
+      "title": "Capture current ledger stats",
+      "description": "Invoke `frontier ledger stats` to snapshot totals by kind.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["frontier.ledger.stats"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["artifact_schema"]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/Users/test/frontier-os/bin/frontier",
+              "args": ["ledger", "stats"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n2_count_sessions",
+      "kind": "research",
+      "title": "Count sessions in last 24h",
+      "description": "Use sqlite3 to count sessions with events in the past day.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["sqlite3"],
+      "verifierPolicy": {
+        "mode": "none"
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/usr/bin/sqlite3",
+              "args": [
+                "/Users/test/.frontier/ledger.db",
+                "SELECT COUNT(DISTINCT session_id) FROM events WHERE ts >= datetime('now', '-1 day')"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n3_approval",
+      "kind": "approval",
+      "title": "Approve before writing the completion notice",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 2,
+      "dependencies": ["n1_stats", "n2_count_sessions"],
+      "allowedTools": [],
+      "verifierPolicy": {
+        "mode": "none"
+      },
+      "sideEffects": ["local_write"],
+      "inputs": [
+        {
+          "type": "text",
+          "value": "Gate before dispatch node writes a completion echo."
+        }
+      ]
+    },
+    {
+      "nodeId": "n4_dispatch",
+      "kind": "dispatch",
+      "title": "Emit completion notice",
+      "description": "Print a terminal notice once stats + sessions are captured and approval is granted.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": ["n3_approval"],
+      "allowedTools": ["echo"],
+      "verifierPolicy": {
+        "mode": "none"
+      },
+      "sideEffects": ["local_write"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/bin/echo",
+              "args": ["[frontier] ledger self-audit complete"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

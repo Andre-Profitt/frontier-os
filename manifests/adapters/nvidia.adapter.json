@@ -1,0 +1,46 @@
+{
+  "adapterId": "nvidia",
+  "version": "v1",
+  "displayName": "NVIDIA GPU (nvidia-smi)",
+  "owner": "frontier-os",
+  "summary": "Read-only GPU telemetry via nvidia-smi CSV query. No deps — shells out directly. Gracefully handles missing binary (returns failed with hint, never crashes). Destructive kill-gpu-process lives in the terminal adapter.",
+  "transport": "native_cli",
+  "modes": ["read"],
+  "approvalDefaults": {
+    "defaultClass": 0
+  },
+  "commands": [
+    {
+      "command": "list-gpus",
+      "summary": "Enumerate GPUs with index, name, uuid, total memory, driver.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["gpu_count_nonzero"],
+      "undoSupported": false
+    },
+    {
+      "command": "gpu-status",
+      "summary": "Per-GPU live metrics: utilization, memory used/total, temp, power draw.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["utilization_bounds"],
+      "undoSupported": false
+    },
+    {
+      "command": "gpu-processes",
+      "summary": "Compute processes on GPUs: pid, process name, GPU uuid, used memory.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["process_schema"],
+      "undoSupported": false
+    },
+    {
+      "command": "driver-version",
+      "summary": "Return the installed NVIDIA driver version.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["version_nonempty"],
+      "undoSupported": false
+    }
+  ]
+}

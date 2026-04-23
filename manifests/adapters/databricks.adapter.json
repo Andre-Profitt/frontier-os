@@ -1,0 +1,64 @@
+{
+  "adapterId": "databricks",
+  "version": "v1",
+  "displayName": "Databricks Adapter",
+  "owner": "frontier-os",
+  "summary": "Databricks workspace queries + class-2 write verbs (run-job). Apply mode triggers real billable actions; propose mode previews. Shells to REST API directly.",
+  "transport": "http_api",
+  "modes": ["read", "propose", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 0,
+    "billableClass": 1,
+    "destructiveClass": 2
+  },
+  "commands": [
+    {
+      "command": "whoami",
+      "summary": "Return the authenticated Databricks user (SCIM /Me): userName, id, displayName.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-clusters",
+      "summary": "List clusters in the workspace (cluster_id, cluster_name, state, driver_node_type_id).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-jobs",
+      "summary": "List the most recent 20 jobs (job_id, name, creator_user_name, schedule).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "job-status",
+      "summary": "Fetch a job by job_id plus its most recent 5 runs with life_cycle_state and result_state.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "workspace-ls",
+      "summary": "List workspace objects under an optional path (default /). 404 returns a graceful failure.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "run-job",
+      "summary": "Trigger a Databricks job run via /api/2.2/jobs/run-now. Propose mode previews the payload without POSTing; apply mode starts a real billable cluster run. Class-2 — must be gated by work-graph approvalClass ≥ 2 or rejected by Ghost Shift.",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "billable_action",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

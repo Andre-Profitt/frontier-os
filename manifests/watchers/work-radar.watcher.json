@@ -1,0 +1,34 @@
+{
+  "watcherId": "work-radar",
+  "version": "v1",
+  "summary": "Aggregate important work and failure signals across key systems and surface the next action.",
+  "schedule": {
+    "mode": "interval",
+    "intervalSeconds": 900
+  },
+  "inputs": [
+    "github",
+    "azure_alerts",
+    "databricks_jobs",
+    "kaggle_runs",
+    "memory"
+  ],
+  "trigger": {
+    "condition": "A new failure, stale task, or high-value opportunity appears in a watched system.",
+    "dedupeKey": "work-radar"
+  },
+  "actionPlan": [
+    {
+      "stepId": "collect-signals",
+      "adapterId": "browser",
+      "command": "list-tabs",
+      "mode": "read"
+    }
+  ],
+  "policy": {
+    "approvalClass": 0,
+    "notifyBeforeAct": false,
+    "maxActionsPerDay": 50,
+    "killSwitchFile": "state/watchers/work-radar.disabled"
+  }
+}

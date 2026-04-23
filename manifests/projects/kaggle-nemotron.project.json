@@ -1,0 +1,37 @@
+{
+  "id": "kaggle-nemotron",
+  "name": "Kaggle Nemotron",
+  "root": "/Users/test/code/labs/kaggle-nemotron",
+  "kind": "ml-lab",
+  "priority": "medium",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {
+    "verify": {
+      "summary": "Run the Python test suite for the Nemotron lab.",
+      "argv": ["uv", "run", "pytest"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 600
+    },
+    "smoke": {
+      "summary": "Check the local Nemotron MLX CLI entrypoint.",
+      "argv": ["uv", "run", "nemotron-mlx", "--help"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 120
+    }
+  },
+  "services": [],
+  "ports": [],
+  "envFiles": ["/Users/test/code/labs/kaggle-nemotron/.env"],
+  "secretsPolicy": {
+    "summary": "Competition tokens and dataset credentials stay in ignored local env or Kaggle config.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["kaggle-nemotron", "kaggle", "nemotron"],
+  "notes": [
+    "Prefer local M4 Max/MPS and shared MLX workbench before billable GPU pods.",
+    "Registry status only declares tests; it does not run uv or download datasets."
+  ]
+}

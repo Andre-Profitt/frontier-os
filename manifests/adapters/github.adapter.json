@@ -1,0 +1,56 @@
+{
+  "adapterId": "github",
+  "version": "v1",
+  "displayName": "GitHub Adapter",
+  "owner": "frontier-os",
+  "summary": "PR / issue / repo queries and class-2 write verbs via the authenticated `gh` CLI. Apply mode writes; propose mode previews without calling gh.",
+  "transport": "native_cli",
+  "modes": ["read", "propose", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 0,
+    "billableClass": 1,
+    "destructiveClass": 2
+  },
+  "commands": [
+    {
+      "command": "list-prs",
+      "summary": "List pull requests for a repo filtered by state and limit.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "get-pr",
+      "summary": "Fetch one PR by number with title, body, diff counts, files, commits, and refs.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-issues",
+      "summary": "List issues for a repo filtered by state and labels with limit.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "repo-summary",
+      "summary": "Return repo metadata: default branch, stars, open issue count, last push timestamp.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "create-pr-comment",
+      "summary": "Post a comment on a pull request. Propose mode previews; apply mode writes. Class-2 — must be gated by work-graph approval class ≥ 2 or refused in Ghost Shift.",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

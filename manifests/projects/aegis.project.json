@@ -1,0 +1,38 @@
+{
+  "id": "aegis",
+  "name": "Aegis",
+  "root": "/Users/test/code/apps/SIRI/aegis",
+  "kind": "dormant",
+  "priority": "dormant",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {},
+  "services": [
+    {
+      "id": "brain-api",
+      "label": "Aegis brain/memory FastAPI service",
+      "kind": "http",
+      "required": false,
+      "processPattern": "aegis",
+      "port": 8742
+    }
+  ],
+  "ports": [
+    {
+      "label": "brain API",
+      "port": 8742,
+      "protocol": "tcp",
+      "required": false
+    }
+  ],
+  "envFiles": ["/Users/test/code/apps/SIRI/aegis/.env"],
+  "secretsPolicy": {
+    "summary": "Dormant service; preserve any local secrets in ignored env files only.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["aegis", "brain", "memory"],
+  "notes": [
+    "Dormant brain/memory service to consolidate or retire.",
+    "Verification is intentionally omitted until discovery identifies the safe current gate."
+  ]
+}

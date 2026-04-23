@@ -1,0 +1,38 @@
+{
+  "id": "nexus",
+  "name": "Nexus",
+  "root": "/Users/test/code/platform/nexus",
+  "kind": "platform",
+  "priority": "medium",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {
+    "verify": {
+      "summary": "Run the Nexus Python test suite.",
+      "argv": ["uv", "run", "pytest"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 600
+    }
+  },
+  "services": [
+    {
+      "id": "nexus-cli",
+      "label": "Nexus CLI/API process",
+      "kind": "process",
+      "required": false,
+      "processPattern": "nexus"
+    }
+  ],
+  "ports": [],
+  "envFiles": ["/Users/test/code/platform/nexus/.env"],
+  "secretsPolicy": {
+    "summary": "Model/API keys stay in ignored local env or provider credential stores.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["nexus", "voice", "mcp"],
+  "notes": [
+    "Voice pipeline, MCP, API, and CLI experiments live here.",
+    "Starting long-running voice or API services is outside registry status."
+  ]
+}

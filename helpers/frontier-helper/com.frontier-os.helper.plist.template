@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.frontier-os.helper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/libexec/frontier-helper</string>
+    <string>--socket</string>
+    <string>/Library/Application Support/FrontierOS/helper.sock</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/frontier-helper.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/frontier-helper.err.log</string>
+</dict>
+</plist>

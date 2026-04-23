@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# frontier — control plane CLI
+# Thin shim that execs the TypeScript entrypoint via tsx.
+# NOTES:
+#   - Node resolves `--import tsx` from cwd's node_modules, so we cd into the
+#     repo root before exec or tsx lookup fails when called from other dirs
+#     (bit us during Phase 3 dogfood).
+#   - launchd's default PATH does NOT include /usr/local/bin or
+#     /opt/homebrew/bin, so plain `exec node` fails with 127 under plist
+#     invocation. We resolve node by absolute path here.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export FRONTIER_INVOCATION_CWD="$PWD"
+cd "$REPO_ROOT"
+
+# Find a usable node interpreter. Priority: env override > Homebrew (arm/x86)
+# > NVM current > system. Fail with a clear message before exec'ing an empty
+# string (which would produce a cryptic "not found").
+NODE_BIN="${FRONTIER_NODE_BIN:-}"
+if [ -z "$NODE_BIN" ]; then
+  for candidate in \
+    /opt/homebrew/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node \
+    "$HOME/.nvm/versions/node/v22/bin/node" \
+    "$HOME/.volta/bin/node"; do
+    if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
+  done
+fi
+if [ -z "$NODE_BIN" ]; then
+  # Last-ditch: try PATH (works when invoked from an interactive shell).
+  NODE_BIN="$(command -v node 2>/dev/null || true)"
+fi
+if [ -z "$NODE_BIN" ]; then
+  echo "frontier: could not resolve a node interpreter." >&2
+  echo "Set FRONTIER_NODE_BIN or put node on PATH." >&2
+  exit 127
+fi
+
+exec "$NODE_BIN" --no-warnings --import tsx src/cli.ts "$@"

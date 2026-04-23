@@ -1,0 +1,46 @@
+{
+  "adapterId": "terminal",
+  "version": "v1",
+  "displayName": "Local terminal",
+  "owner": "frontier-os",
+  "summary": "Policy-gated local shell execution via execa. Side-effect classification is a static allowlist — operators add command prefixes to raise or lower classification.",
+  "transport": "native_cli",
+  "modes": ["read", "propose", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 1
+  },
+  "commands": [
+    {
+      "command": "run-command",
+      "summary": "Execute a shell command with argv (no shell interpretation by default).",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "local_write",
+      "verifierHints": ["exitCode", "stderr_empty_or_expected"],
+      "undoSupported": false
+    },
+    {
+      "command": "read-file",
+      "summary": "Read a file from disk. No side effects.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["file_exists"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-dir",
+      "summary": "List a directory's contents. No side effects.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["dir_exists"],
+      "undoSupported": false
+    },
+    {
+      "command": "which",
+      "summary": "Locate a binary on PATH. No side effects.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["path_nonempty"],
+      "undoSupported": false
+    }
+  ]
+}

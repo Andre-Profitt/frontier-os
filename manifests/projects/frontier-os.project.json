@@ -1,0 +1,89 @@
+{
+  "id": "frontier-os",
+  "name": "Frontier OS",
+  "root": "/Users/test/frontier-os",
+  "kind": "control-plane",
+  "priority": "critical",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {
+    "verify": {
+      "summary": "TypeScript compile gate for the control-plane CLI.",
+      "argv": ["npm", "run", "typecheck"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 120
+    },
+    "smoke": {
+      "summary": "List watcher manifests through the Frontier CLI.",
+      "argv": ["/Users/test/frontier-os/bin/frontier", "watcher", "list", "--json"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 30
+    },
+    "logs": [
+      {
+        "label": "LaunchAgent logs",
+        "path": "/Users/test/Library/Logs/frontier-os",
+        "kind": "directory"
+      }
+    ]
+  },
+  "services": [
+    {
+      "id": "work-radar",
+      "label": "Work Radar watcher",
+      "kind": "launchagent",
+      "required": true,
+      "launchAgentLabel": "com.frontier-os.work-radar",
+      "logPaths": [
+        "/Users/test/Library/Logs/frontier-os/work-radar.out.log",
+        "/Users/test/Library/Logs/frontier-os/work-radar.err.log"
+      ]
+    },
+    {
+      "id": "runpod-idle-killer",
+      "label": "RunPod idle killer watcher",
+      "kind": "launchagent",
+      "required": true,
+      "launchAgentLabel": "com.frontier-os.runpod-idle-killer",
+      "logPaths": [
+        "/Users/test/Library/Logs/frontier-os/runpod-idle-killer.out.log",
+        "/Users/test/Library/Logs/frontier-os/runpod-idle-killer.err.log"
+      ]
+    },
+    {
+      "id": "overnight-review",
+      "label": "Overnight review watcher",
+      "kind": "launchagent",
+      "required": true,
+      "launchAgentLabel": "com.frontier-os.overnight-review",
+      "logPaths": [
+        "/Users/test/Library/Logs/frontier-os/overnight-review.out.log",
+        "/Users/test/Library/Logs/frontier-os/overnight-review.err.log"
+      ]
+    },
+    {
+      "id": "ghost-shift",
+      "label": "Ghost Shift queue runner",
+      "kind": "launchagent",
+      "required": true,
+      "launchAgentLabel": "com.frontier-os.ghost-shift",
+      "logPaths": [
+        "/Users/test/Library/Logs/frontier-os/ghost-shift.out.log",
+        "/Users/test/Library/Logs/frontier-os/ghost-shift.err.log"
+      ]
+    }
+  ],
+  "ports": [],
+  "envFiles": ["/Users/test/frontier-os/.env", "/Users/test/frontier-os/.env.local"],
+  "secretsPolicy": {
+    "summary": "Do not store secrets in manifests; local env files stay ignored and are never committed.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["frontier-os", "watcher", "ghost-shift"],
+  "notes": [
+    "Verification and smoke commands are declared for future runners; project status does not execute them.",
+    "frontierd user LaunchAgent residency is installed and visible through ops status."
+  ]
+}

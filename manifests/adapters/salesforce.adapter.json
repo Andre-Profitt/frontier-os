@@ -1,0 +1,104 @@
+{
+  "adapterId": "salesforce",
+  "version": "v1",
+  "displayName": "Salesforce Browser Adapter",
+  "owner": "frontier-os",
+  "summary": "Semantic Salesforce control over Lightning pages and dashboards through the browser adapter plus an in-page helper.",
+  "transport": "composite",
+  "modes": ["read", "propose", "apply", "undo"],
+  "approvalDefaults": {
+    "defaultClass": 1,
+    "billableClass": 2,
+    "destructiveClass": 3
+  },
+  "commands": [
+    {
+      "command": "inspect-dashboard",
+      "summary": "Extract dashboard title, widgets, filters, layout, and visible health signals.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["artifact_schema", "trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "inspect-report",
+      "summary": "Extract Lightning report title, filter state, visible actions, and health signals from the current report view.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["artifact_schema", "trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "set-report-filter",
+      "summary": "Apply a Lightning report filter action from inline shortcuts, dialog-backed picklists, or typed editor inputs and verify the new visible filter state.",
+      "supportedModes": ["apply"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "audit-dashboard",
+      "summary": "Generate a structured usability and performance audit of the current dashboard.",
+      "supportedModes": ["read", "propose"],
+      "sideEffectClass": "none",
+      "verifierHints": ["artifact_schema", "trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-filters",
+      "summary": "Return currently available dashboard filters and selected values.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["artifact_schema"],
+      "undoSupported": false
+    },
+    {
+      "command": "set-filter",
+      "summary": "Set a dashboard filter value and verify resulting state changes.",
+      "supportedModes": ["apply", "undo"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": true
+    },
+    {
+      "command": "enter-edit-mode",
+      "summary": "Open dashboard edit mode and confirm editable state.",
+      "supportedModes": ["apply"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": true
+    },
+    {
+      "command": "move-widget",
+      "summary": "Reposition a dashboard widget in edit mode and verify new layout.",
+      "supportedModes": ["apply", "undo"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": true
+    },
+    {
+      "command": "save-dashboard",
+      "summary": "Save dashboard edits and confirm the page exits dirty state.",
+      "supportedModes": ["apply"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "human_review"],
+      "undoSupported": false
+    },
+    {
+      "command": "deploy-report",
+      "summary": "Deploy a Salesforce Report metadata file (.report-meta.xml) to a target org via `sf project deploy start`. Propose previews the sf argv + parses the report name/folder; apply shells out and captures the deploy id. Class-2 `deploy` side effect — Ghost Shift always refuses (deploy is in DANGEROUS_SIDE_EFFECTS).",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "deploy",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "portfolio-inventory",
+      "summary": "Server-side portfolio audit: lists the user's dashboards, fetches per-dashboard widget->report mappings via /analytics/dashboards/<id>/describe, batch-SOQLs Report LastRunDate, and returns the cross-dashboard shared-reports + stale-reports aggregate. Zero DOM dependency — safe for overnight Ghost Shift lane.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

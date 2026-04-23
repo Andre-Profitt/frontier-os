@@ -1,0 +1,101 @@
+{
+  "graphId": "wg_sf_deploy_report_demo_v1",
+  "version": "v1",
+  "goal": "Demo: deploy a Salesforce Report metadata file. n1 previews via salesforce deploy-report propose (class-1, parses XML, no mutation), n2 applies via salesforce deploy-report apply (class-2 deploy). Proof: Ghost Shift rejects the pre-existing `deploy` side-effect category with a real live apply-mode adapter behind it.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-19T00:00:00Z",
+  "priority": "normal",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 1,
+    "requireHumanFor": [
+      "deploy",
+      "destructive_action",
+      "external_message",
+      "financial_action",
+      "auth_change",
+      "billable_action"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 300,
+    "maxToolCalls": 4,
+    "maxCostUsd": 0.5
+  },
+  "labels": ["demo", "salesforce", "deploy", "class-2"],
+  "successCriteria": [
+    "n1_propose returns status=success with deploy side effect declared and sf argv echoed",
+    "n2_apply gated as awaiting_approval (class-2 > default 1)",
+    "Ghost Shift rejects with class_too_high @ n2_apply AND dangerous_side_effect deploy"
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1_propose",
+      "kind": "browser_task",
+      "title": "Preview report deploy (no mutation)",
+      "description": "Propose-mode call to salesforce deploy-report — parses .report-meta.xml + echoes the sf project deploy start argv without shelling out.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [],
+      "allowedTools": ["salesforce.deploy-report"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["policy", "trace_grade"]
+      },
+      "sideEffects": ["none"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "salesforce",
+            "command": "deploy-report",
+            "mode": "propose",
+            "arguments": {
+              "reportPath": "/tmp/frontier-sf-demo/reports/DemoReport.report-meta.xml",
+              "targetOrg": "demo-alias"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n2_apply",
+      "kind": "browser_task",
+      "title": "Apply report deploy (class-2 deploy)",
+      "description": "Apply-mode shell-out to `sf project deploy start --metadata-dir ... --target-org demo-alias`. Class-2: Ghost Shift refuses (deploy), interactive runs require human approval.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 2,
+      "dependencies": ["n1_propose"],
+      "allowedTools": ["salesforce.deploy-report"],
+      "verifierPolicy": {
+        "mode": "required_before_side_effect",
+        "checks": ["policy", "trace_grade"]
+      },
+      "sideEffects": ["deploy"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "salesforce",
+            "command": "deploy-report",
+            "mode": "apply",
+            "arguments": {
+              "reportPath": "/tmp/frontier-sf-demo/reports/DemoReport.report-meta.xml",
+              "targetOrg": "demo-alias"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/adapter-invocation.schema.json",
+  "title": "FrontierOS Adapter Invocation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocationId",
+    "adapterId",
+    "command",
+    "mode",
+    "requestedAt",
+    "arguments"
+  ],
+  "properties": {
+    "invocationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "adapterId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "command": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "read",
+        "propose",
+        "apply",
+        "undo"
+      ]
+    },
+    "requestedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "traceId": {
+          "type": "string"
+        },
+        "intentId": {
+          "type": "string"
+        },
+        "graphId": {
+          "type": "string"
+        },
+        "nodeId": {
+          "type": "string"
+        },
+        "actorId": {
+          "type": "string"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approvalClass": {
+          "type": "integer",
+          "enum": [0, 1, 2, 3]
+        },
+        "allowSideEffects": {
+          "type": "boolean"
+        },
+        "requireVerification": {
+          "type": "boolean"
+        },
+        "maxRuntimeSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "arguments": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

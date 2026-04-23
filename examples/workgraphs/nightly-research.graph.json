@@ -1,0 +1,97 @@
+{
+  "graphId": "wg_nightly_research_v1",
+  "version": "v1",
+  "goal": "Nightly research on one high-priority watchlist topic. Ghost-Shift-safe (class <= 1). Writes a brief under ~/.frontier/research/<sessionId>/brief.md and records completion in the ledger.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-19T00:00:00Z",
+  "priority": "normal",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 1,
+    "requireHumanFor": [
+      "deploy",
+      "external_message",
+      "financial_action",
+      "auth_change"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 600,
+    "maxToolCalls": 8,
+    "maxCostUsd": 3
+  },
+  "labels": ["nightly", "research", "watchlist", "ghost-shift-safe"],
+  "successCriteria": [
+    "research.monitor-topic completes with a brief artifact",
+    "dispatch node logs completion via echo",
+    "no node exceeds class 1 (Ghost-Shift-safe)"
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1_research",
+      "kind": "research",
+      "title": "Monitor one high-priority watchlist topic",
+      "description": "Invoke the research adapter's monitor-topic command. Which topic is chosen by the operator enqueuing the graph — override via context at enqueue time (future Phase 16), for now hard-wired to agent_frameworks.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [],
+      "allowedTools": ["research.monitor-topic"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["artifact_schema"]
+      },
+      "sideEffects": ["local_write"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "research",
+            "command": "monitor-topic",
+            "mode": "apply",
+            "arguments": {
+              "topicId": "agent_frameworks",
+              "maxWorkers": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n2_notice",
+      "kind": "dispatch",
+      "title": "Emit completion notice to the ledger",
+      "description": "Visible marker that the nightly research cycle finished. Ledger correlation via the sessionId tag.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": ["n1_research"],
+      "allowedTools": ["echo"],
+      "verifierPolicy": {
+        "mode": "none"
+      },
+      "sideEffects": ["local_write"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/bin/echo",
+              "args": [
+                "[frontier] nightly research brief produced; review via `frontier adapter invoke research brief --mode read --pretty`"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/watcher-spec.schema.json",
+  "title": "FrontierOS Watcher Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "watcherId",
+    "version",
+    "summary",
+    "schedule",
+    "inputs",
+    "trigger",
+    "actionPlan",
+    "policy"
+  ],
+  "properties": {
+    "watcherId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+$"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "interval",
+            "cron",
+            "event",
+            "manual"
+          ]
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cron": {
+          "type": "string"
+        },
+        "eventSources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "condition"
+      ],
+      "properties": {
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dedupeKey": {
+          "type": "string"
+        }
+      }
+    },
+    "actionPlan": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepId",
+          "adapterId",
+          "command",
+          "mode"
+        ],
+        "properties": {
+          "stepId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "adapterId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*$"
+          },
+          "command": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*$"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "read",
+              "propose",
+              "apply",
+              "undo"
+            ]
+          },
+          "when": {
+            "type": "string"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approvalClass"
+      ],
+      "properties": {
+        "approvalClass": {
+          "type": "integer",
+          "enum": [0, 1, 2, 3]
+        },
+        "notifyBeforeAct": {
+          "type": "boolean"
+        },
+        "maxActionsPerDay": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "killSwitchFile": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

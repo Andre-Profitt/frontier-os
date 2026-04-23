@@ -1,0 +1,94 @@
+{
+  "graphId": "wg_parallel_sleep_demo",
+  "version": "v1",
+  "goal": "Prove wave-based parallel execution: 3 sibling sleep(1) nodes + a join dispatch. Expected wall time ~1s not ~3s.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-18T22:30:00Z",
+  "priority": "low",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 0,
+    "requireHumanFor": []
+  },
+  "labels": ["demo", "parallel", "phase-6.1"],
+  "successCriteria": [
+    "All 4 nodes complete.",
+    "Peak concurrency observed = 3."
+  ],
+  "nodes": [
+    {
+      "nodeId": "s1",
+      "kind": "research",
+      "title": "sleep 1s (branch a)",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["sleep"],
+      "verifierPolicy": { "mode": "none" },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": { "cli": { "command": "/bin/sleep", "args": ["1"] } }
+        }
+      ]
+    },
+    {
+      "nodeId": "s2",
+      "kind": "research",
+      "title": "sleep 1s (branch b)",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["sleep"],
+      "verifierPolicy": { "mode": "none" },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": { "cli": { "command": "/bin/sleep", "args": ["1"] } }
+        }
+      ]
+    },
+    {
+      "nodeId": "s3",
+      "kind": "research",
+      "title": "sleep 1s (branch c)",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["sleep"],
+      "verifierPolicy": { "mode": "none" },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": { "cli": { "command": "/bin/sleep", "args": ["1"] } }
+        }
+      ]
+    },
+    {
+      "nodeId": "join",
+      "kind": "dispatch",
+      "title": "echo join — all branches completed",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": ["s1", "s2", "s3"],
+      "allowedTools": ["echo"],
+      "verifierPolicy": { "mode": "none" },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": { "command": "/bin/echo", "args": ["all branches joined"] }
+          }
+        }
+      ]
+    }
+  ]
+}

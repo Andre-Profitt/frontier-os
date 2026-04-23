@@ -1,0 +1,39 @@
+{
+  "watcherId": "runpod-idle-killer",
+  "version": "v1",
+  "summary": "Detect idle paid RunPod GPUs and stop them before money is wasted.",
+  "schedule": {
+    "mode": "interval",
+    "intervalSeconds": 300
+  },
+  "inputs": [
+    "runpod_pods",
+    "gpu_utilization",
+    "process_heartbeat",
+    "policy_pack"
+  ],
+  "trigger": {
+    "condition": "GPU utilization remains below threshold and no approved active process heartbeat exists beyond the idle window.",
+    "dedupeKey": "runpod-idle"
+  },
+  "actionPlan": [
+    {
+      "stepId": "inspect-pods",
+      "adapterId": "browser",
+      "command": "list-tabs",
+      "mode": "read"
+    },
+    {
+      "stepId": "notify-owner",
+      "adapterId": "browser",
+      "command": "capture-screenshot",
+      "mode": "read"
+    }
+  ],
+  "policy": {
+    "approvalClass": 2,
+    "notifyBeforeAct": true,
+    "maxActionsPerDay": 10,
+    "killSwitchFile": "state/watchers/runpod-idle-killer.disabled"
+  }
+}

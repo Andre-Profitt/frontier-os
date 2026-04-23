@@ -1,0 +1,30 @@
+{
+  "id": "crm-analytics",
+  "name": "CRM Analytics",
+  "root": "/Users/test/crm-analytics",
+  "kind": "analytics",
+  "priority": "critical",
+  "owner": "Andre Profitt",
+  "riskClass": 2,
+  "commands": {
+    "verify": {
+      "summary": "Static Salesforce CRM Analytics repository verification.",
+      "argv": ["make", "verify"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 300
+    }
+  },
+  "services": [],
+  "ports": [],
+  "envFiles": ["/Users/test/crm-analytics/.env"],
+  "secretsPolicy": {
+    "summary": "Salesforce credentials remain outside manifests; use sf CLI and local ignored env only.",
+    "allowEnvFiles": true
+  },
+  "ledgerTags": ["crm-analytics", "salesforce", "monthly-review"],
+  "notes": [
+    "CRM Analytics work is CLI-only through sf CLI and Wave API.",
+    "Dashboard deploys, external messaging, and live org writes require explicit approval."
+  ]
+}

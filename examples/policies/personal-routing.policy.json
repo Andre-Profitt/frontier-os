@@ -1,0 +1,84 @@
+{
+  "policyId": "personal-routing",
+  "version": "v1",
+  "defaults": {
+    "preferredExecutor": "codex_exec",
+    "fallbackExecutors": [
+      "claude_code",
+      "local_model"
+    ]
+  },
+  "routes": [
+    {
+      "match": {
+        "taskKinds": [
+          "browser_task",
+          "mac_task"
+        ],
+        "systems": [
+          "salesforce",
+          "chrome",
+          "atlas"
+        ]
+      },
+      "preferredExecutor": "codex_exec",
+      "fallbackExecutors": [
+        "claude_code"
+      ],
+      "notes": "Keep browser and system control on the strongest local executor with the most reliable tool loop."
+    },
+    {
+      "match": {
+        "taskKinds": [
+          "research",
+          "review"
+        ],
+        "labels": [
+          "overnight",
+          "summarization"
+        ]
+      },
+      "preferredExecutor": "local_model",
+      "fallbackExecutors": [
+        "codex_exec",
+        "claude_code"
+      ],
+      "notes": "Cheap background summarization should default local when quality bar allows."
+    },
+    {
+      "match": {
+        "taskKinds": [
+          "code_change",
+          "repo_analysis",
+          "test_run"
+        ],
+        "systems": [
+          "github",
+          "terminal"
+        ]
+      },
+      "preferredExecutor": "codex_exec",
+      "fallbackExecutors": [
+        "claude_code",
+        "local_model"
+      ],
+      "notes": "Keep primary engineering loops on the best coding executor with local verification."
+    },
+    {
+      "match": {
+        "taskKinds": [
+          "research"
+        ],
+        "labels": [
+          "deep_reasoning",
+          "quantum"
+        ]
+      },
+      "preferredExecutor": "claude_code",
+      "fallbackExecutors": [
+        "codex_exec"
+      ],
+      "notes": "Allow specialized reasoning lanes where they demonstrably outperform."
+    }
+  ]
+}

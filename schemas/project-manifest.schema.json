@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/project-manifest.schema.json",
+  "title": "FrontierOS Project Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "root",
+    "kind",
+    "priority",
+    "owner",
+    "riskClass",
+    "commands",
+    "services",
+    "ports",
+    "envFiles",
+    "secretsPolicy",
+    "ledgerTags",
+    "notes"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "control-plane",
+        "workbench",
+        "platform",
+        "analytics",
+        "ml-lab",
+        "application",
+        "service",
+        "dormant"
+      ]
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "dormant"]
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "riskClass": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3]
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verify": {
+          "$ref": "#/$defs/command"
+        },
+        "smoke": {
+          "$ref": "#/$defs/command"
+        },
+        "dev": {
+          "$ref": "#/$defs/command"
+        },
+        "logs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/logPath"
+          }
+        }
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/service"
+      }
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/port"
+      }
+    },
+    "envFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "secretsPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "allowEnvFiles"],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "allowEnvFiles": {
+          "type": "boolean"
+        },
+        "keychainItems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "ledgerTags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "sideEffectClass": {
+      "type": "string",
+      "enum": [
+        "auth_change",
+        "billable_action",
+        "deploy",
+        "destructive_action",
+        "external_message",
+        "financial_action",
+        "local_write",
+        "none",
+        "pr_open",
+        "repo_write",
+        "shared_write",
+        "ticket_write"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "argv", "approvalClass", "sideEffectClass"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "approvalClass": {
+          "type": "integer",
+          "enum": [0, 1, 2, 3]
+        },
+        "sideEffectClass": {
+          "$ref": "#/$defs/sideEffectClass"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "logPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "path"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["stdout", "stderr", "combined", "directory", "file"]
+        }
+      }
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "port", "protocol", "required"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["tcp", "udp"]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "kind", "required"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["process", "launchagent", "http", "cli", "unknown"]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "processPattern": {
+          "type": "string"
+        },
+        "launchAgentLabel": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "logPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

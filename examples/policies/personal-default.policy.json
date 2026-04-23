@@ -1,0 +1,37 @@
+{
+  "policyId": "personal-default",
+  "version": "v1",
+  "createdAt": "2026-04-08T09:00:00Z",
+  "defaults": {
+    "allowSideEffects": true,
+    "requireVerification": true,
+    "defaultApprovalClass": 1
+  },
+  "approvals": {
+    "alwaysHumanFor": [
+      "financial_action",
+      "destructive_action",
+      "external_message",
+      "credential_change",
+      "privilege_change",
+      "repo_publish"
+    ]
+  },
+  "notifications": {
+    "channels": [
+      "terminal",
+      "shortcuts",
+      "desktop_notification"
+    ],
+    "quietHours": [
+      "23:00",
+      "07:00"
+    ]
+  },
+  "spendControls": {
+    "runpodIdleMinutes": 15,
+    "dailySpendUsdSoftLimit": 25,
+    "dailySpendUsdHardLimit": 75,
+    "localGpuMaxTempC": 82
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "adapterId": "sigma",
+  "version": "v1",
+  "displayName": "Sigma Adapter",
+  "owner": "frontier-os",
+  "summary": "Sigma workbooks / members / datasets (read) plus class-1 refresh-workbook write verb. Apply mode triggers a real materialization; propose mode previews. Ghost-Shift-safe at class 1.",
+  "transport": "native_cli",
+  "modes": ["read", "propose", "apply"],
+  "approvalDefaults": {
+    "defaultClass": 0,
+    "billableClass": 1,
+    "destructiveClass": 2
+  },
+  "commands": [
+    {
+      "command": "whoami",
+      "summary": "Fetch the authenticated Sigma member (validates OAuth2 credentials).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-workbooks",
+      "summary": "List workbooks visible to the authenticated member with id, name, path, owner, and timestamps.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "inspect-workbook",
+      "summary": "Fetch a single workbook's metadata plus its page list.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-members",
+      "summary": "List organization members (basic identity and role data).",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "list-datasets",
+      "summary": "List Sigma datasets visible to the authenticated member.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "refresh-workbook",
+      "summary": "Trigger a materialization of a Sigma workbook via POST /v2/workbooks/{id}/materializations/schedule. Propose mode previews; apply mode POSTs. Class-1 shared_write — Ghost-Shift allows class ≤ 1 by default.",
+      "supportedModes": ["propose", "apply"],
+      "sideEffectClass": "shared_write",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

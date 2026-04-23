@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/command-result.schema.json",
+  "title": "FrontierOS Command Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "commandId",
+    "traceId",
+    "status",
+    "intent",
+    "requestedAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "commandId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "traceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "blocked_approval",
+        "blocked_policy",
+        "completed",
+        "failed",
+        "canceled"
+      ]
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": ["string", "null"]
+    },
+    "actor": {
+      "type": "string"
+    },
+    "surface": {
+      "type": "string"
+    },
+    "requestedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approvalClass": {
+      "type": ["integer", "null"],
+      "enum": [0, 1, 2, 3, null]
+    },
+    "lane": {
+      "type": ["string", "null"]
+    },
+    "verb": {
+      "type": ["string", "null"]
+    },
+    "route": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "policy": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "plan": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "checkpoint": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "interrupt": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "resumeCursor": {
+      "type": ["string", "null"]
+    },
+    "retryPolicy": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "idempotencyKey": {
+      "type": ["string", "null"]
+    },
+    "lease": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "result": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "error": {
+      "type": ["string", "null"]
+    },
+    "activities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  }
+}

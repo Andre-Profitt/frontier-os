@@ -1,0 +1,71 @@
+{
+  "graphId": "wg_retry_flaky_demo",
+  "version": "v1",
+  "goal": "Prove retry loop: a flaky node that fails on first attempt and succeeds on second.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-18T22:35:00Z",
+  "priority": "low",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 0,
+    "requireHumanFor": []
+  },
+  "labels": ["demo", "retry", "phase-6.1"],
+  "successCriteria": [
+    "Node succeeds by attempt 2.",
+    "work.node_retry event is emitted."
+  ],
+  "nodes": [
+    {
+      "nodeId": "flaky",
+      "kind": "research",
+      "title": "flaky: fails if /tmp/flaky.stamp is missing, touches it and fails; succeeds on retry",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["sh"],
+      "verifierPolicy": { "mode": "none" },
+      "retryPolicy": {
+        "maxAttempts": 3,
+        "backoffMs": 50,
+        "retryOnFailed": true
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/bin/sh",
+              "args": [
+                "-c",
+                "if [ -f /tmp/flaky.stamp ]; then echo 'stamp exists — succeeding'; exit 0; fi; touch /tmp/flaky.stamp; echo 'no stamp — first attempt fails' >&2; exit 1"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "confirm",
+      "kind": "dispatch",
+      "title": "echo retry path verified",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": ["flaky"],
+      "allowedTools": ["echo"],
+      "verifierPolicy": { "mode": "none" },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": { "command": "/bin/echo", "args": ["retry path verified"] }
+          }
+        }
+      ]
+    }
+  ]
+}

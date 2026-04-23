@@ -1,0 +1,73 @@
+{
+  "id": "mlx-workbench",
+  "name": "Shared MLX Workbench",
+  "root": "/Users/test/.frontier/mlx",
+  "kind": "workbench",
+  "priority": "critical",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {
+    "verify": {
+      "summary": "Check shared MLX workbench readiness.",
+      "argv": ["/Users/test/.frontier/mlx/bin/mlxw", "status", "--fail-if-not-ready"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 120
+    },
+    "smoke": {
+      "summary": "Run the shared MLX smoke test.",
+      "argv": ["/Users/test/.frontier/mlx/bin/mlxw", "smoke"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 600
+    },
+    "logs": [
+      {
+        "label": "MLX reports",
+        "path": "/Users/test/.mlcc/mlx",
+        "kind": "directory"
+      }
+    ]
+  },
+  "services": [
+    {
+      "id": "mlx-watch",
+      "label": "MLX workbench watch loop",
+      "kind": "process",
+      "required": false,
+      "processPattern": "mlxw watch"
+    },
+    {
+      "id": "mlx-unlock",
+      "label": "MLX unlock runner",
+      "kind": "process",
+      "required": false,
+      "processPattern": "mlxw unlock-run"
+    },
+    {
+      "id": "mlx-openai-endpoint",
+      "label": "Shared local OpenAI-compatible MLX endpoint",
+      "kind": "http",
+      "required": false,
+      "port": 8011
+    }
+  ],
+  "ports": [
+    {
+      "label": "qwen2.5-7b-mlx endpoint",
+      "port": 8011,
+      "protocol": "tcp",
+      "required": false
+    }
+  ],
+  "envFiles": [],
+  "secretsPolicy": {
+    "summary": "Workbench config is local under /Users/test/.frontier/mlx; no secrets are stored in project manifests.",
+    "allowEnvFiles": false
+  },
+  "ledgerTags": ["mlx", "mlx-workbench"],
+  "notes": [
+    "Use /Users/test/.frontier/mlx/bin/mlxw as the shared entrypoint before app-specific MLX work.",
+    "Status may report optional background processes as absent without marking the project failed."
+  ]
+}

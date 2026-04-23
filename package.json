@@ -1,0 +1,35 @@
+{
+  "name": "frontier-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontier OS control plane — CLI, adapters, watchers, memory.",
+  "type": "module",
+  "bin": {
+    "frontier": "bin/frontier"
+  },
+  "scripts": {
+    "frontier": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@azure/arm-resources": "^7.0.0",
+    "@azure/arm-subscriptions": "^6.0.0",
+    "@azure/identity": "^4.13.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "better-sqlite3": "^12.8.0",
+    "chrome-remote-interface": "^0.34.0",
+    "execa": "^9.6.1"
+  },
+  "devDependencies": {
+    "@types/chrome-remote-interface": "^0.33.0",
+    "@types/node": "^22.10.2",
+    "devtools-protocol": "^0.0.1608973",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

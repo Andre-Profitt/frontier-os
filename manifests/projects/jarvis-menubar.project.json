@@ -1,0 +1,43 @@
+{
+  "id": "jarvis-menubar",
+  "name": "Jarvis Menubar",
+  "root": "/Users/test/code/apps/jarvis-menubar",
+  "kind": "application",
+  "priority": "medium",
+  "owner": "Andre Profitt",
+  "riskClass": 1,
+  "commands": {
+    "verify": {
+      "summary": "Run Swift package tests for the menubar app.",
+      "argv": ["swift", "test"],
+      "approvalClass": 0,
+      "sideEffectClass": "none",
+      "timeoutSeconds": 600
+    },
+    "dev": {
+      "summary": "Run the native macOS menubar app.",
+      "argv": ["swift", "run", "jarvis-menubar"],
+      "approvalClass": 1,
+      "sideEffectClass": "local_write"
+    }
+  },
+  "services": [
+    {
+      "id": "menubar-app",
+      "label": "Jarvis menubar process",
+      "kind": "process",
+      "required": false,
+      "processPattern": "jarvis-menubar"
+    }
+  ],
+  "ports": [],
+  "envFiles": [],
+  "secretsPolicy": {
+    "summary": "Reads Frontier state locally; no secrets should be stored in the manifest.",
+    "allowEnvFiles": false
+  },
+  "ledgerTags": ["jarvis-menubar", "menubar", "frontier-ui"],
+  "notes": [
+    "Menubar reads Frontier state; registry status does not launch the app."
+  ]
+}

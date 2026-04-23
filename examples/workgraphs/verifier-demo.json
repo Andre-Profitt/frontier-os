@@ -1,0 +1,102 @@
+{
+  "graphId": "wg_verifier_demo",
+  "version": "v1",
+  "goal": "Exercise the Phase 6.3 verifier service: one node passes all checks, one node is caught by trace_grade, one is caught by tests.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-18T23:00:00Z",
+  "priority": "low",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 0,
+    "requireHumanFor": []
+  },
+  "labels": ["demo", "verifier", "phase-6.3"],
+  "successCriteria": [
+    "n_pass completes and verifier passes all checks.",
+    "n_fail_trace is marked failed — trace_grade catches 'TODO' red flag.",
+    "n_fail_tests is marked failed — tests check returns non-zero exit."
+  ],
+  "nodes": [
+    {
+      "nodeId": "n_pass",
+      "kind": "research",
+      "title": "Clean output + passing test + artifact payload — should verify",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["echo", "true"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["trace_grade", "artifact_schema", "tests", "policy"],
+        "config": {
+          "tests": { "command": "/usr/bin/true", "args": [] }
+        }
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": { "command": "/bin/echo", "args": ["frontier verifier ok"] }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n_fail_trace",
+      "kind": "research",
+      "title": "Dispatch output contains 'TODO' — trace_grade should fail",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["echo"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["trace_grade"]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/bin/echo",
+              "args": ["TODO: this is a stub placeholder"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n_fail_tests",
+      "kind": "research",
+      "title": "Tests check invokes /usr/bin/false — should fail",
+      "status": "queued",
+      "priority": "low",
+      "runtime": { "plane": "linux", "executor": "native_cli" },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["echo", "false"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["tests"],
+        "config": {
+          "tests": { "command": "/usr/bin/false", "args": [] }
+        }
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/bin/echo",
+              "args": ["clean output but failing tests"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "graphId": "wg_runpod_stop_demo_v1",
+  "version": "v1",
+  "goal": "Demo: stop a RunPod pod. n1 previews via runpod stop-pod propose (class-1, no mutation), n2 applies via runpod stop-pod apply (class-2 billable). Proof: Ghost Shift rejects the new billable_action category (added to DANGEROUS_SIDE_EFFECTS alongside class_too_high).",
+  "tenantId": "personal",
+  "createdAt": "2026-04-19T00:00:00Z",
+  "priority": "normal",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 1,
+    "requireHumanFor": [
+      "billable_action",
+      "destructive_action",
+      "deploy",
+      "external_message",
+      "financial_action",
+      "auth_change"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 120,
+    "maxToolCalls": 4,
+    "maxCostUsd": 0.2
+  },
+  "labels": ["demo", "runpod", "billable", "class-2"],
+  "successCriteria": [
+    "n1_propose returns status=success with billable_action side effect declared",
+    "n2_apply gated as awaiting_approval (class-2 > default 1)",
+    "Ghost Shift rejects with class_too_high @ n2_apply AND dangerous_side_effect billable_action"
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1_propose",
+      "kind": "browser_task",
+      "title": "Preview pod stop (no mutation)",
+      "description": "Propose-mode call to runpod stop-pod — describes the billable_action effect without calling the GraphQL API.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [],
+      "allowedTools": ["runpod.stop-pod"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["policy", "trace_grade"]
+      },
+      "sideEffects": ["none"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "runpod",
+            "command": "stop-pod",
+            "mode": "propose",
+            "arguments": {
+              "podId": "fake-pod-01"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n2_apply",
+      "kind": "browser_task",
+      "title": "Apply pod stop (class-2 billable)",
+      "description": "Apply-mode podStop mutation via GraphQL. Class-2: Ghost Shift must refuse (billable_action), interactive run awaits human approval.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 2,
+      "dependencies": ["n1_propose"],
+      "allowedTools": ["runpod.stop-pod"],
+      "verifierPolicy": {
+        "mode": "required_before_side_effect",
+        "checks": ["policy", "trace_grade"]
+      },
+      "sideEffects": ["billable_action"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "runpod",
+            "command": "stop-pod",
+            "mode": "apply",
+            "arguments": {
+              "podId": "fake-pod-01"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

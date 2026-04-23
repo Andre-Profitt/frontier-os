@@ -1,0 +1,32 @@
+{
+  "watcherId": "nightly-sf-portfolio",
+  "version": "v1",
+  "summary": "Nightly Salesforce portfolio audit: pulls widget->report freshness for the user's dashboards via API (no Chrome), persists a snapshot alert, and emits one medium-severity alert per report that became stale since yesterday.",
+  "schedule": {
+    "mode": "interval",
+    "intervalSeconds": 86400
+  },
+  "inputs": [
+    "salesforce_dashboards",
+    "salesforce_reports",
+    "prior_nightly_snapshot"
+  ],
+  "trigger": {
+    "condition": "A report referenced by a watched dashboard has crossed the configured staleDays threshold since the prior nightly snapshot.",
+    "dedupeKey": "nightly-sf-portfolio"
+  },
+  "actionPlan": [
+    {
+      "stepId": "portfolio-inventory",
+      "adapterId": "salesforce",
+      "command": "portfolio-inventory",
+      "mode": "read"
+    }
+  ],
+  "policy": {
+    "approvalClass": 0,
+    "notifyBeforeAct": true,
+    "maxActionsPerDay": 2,
+    "killSwitchFile": "state/watchers/nightly-sf-portfolio.disabled"
+  }
+}

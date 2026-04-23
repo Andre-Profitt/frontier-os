@@ -1,0 +1,363 @@
+{
+  "version": "v1",
+  "updated": "2026-04-18",
+  "owner": "andreprofitt@gmail.com",
+  "notes": "Research watchlist consumed by `frontier research monitor-topic`. Each topic is a self-contained brief spec. Queries are literal strings handed to Claude's web_search tool. Cadence is a hint; the scheduler reconciles.",
+  "topics": [
+    {
+      "topicId": "agent_frameworks",
+      "title": "Agent frameworks and multi-agent orchestration",
+      "rationale": "Frontier OS compounds on primitives from Anthropic, OpenAI, LangGraph, Letta, MCP. Missing a release means reinventing a primitive. High churn surface: Agent SDK, Agents API, MCP spec, evals.",
+      "cadence": "weekly",
+      "priority": "high",
+      "queries": [
+        "site:anthropic.com/engineering multi-agent OR \"agent sdk\" 2026",
+        "\"claude agent sdk\" release OR changelog 2026",
+        "site:openai.com agents OR responses API 2026",
+        "\"model context protocol\" OR MCP spec changelog 2026",
+        "\"langgraph\" OR \"letta\" OR \"autogen\" release breaking changes 2026",
+        "\"agent framework\" benchmark OR eval 2026 arxiv"
+      ],
+      "sources": {
+        "arxivCategories": ["cs.MA", "cs.CL", "cs.AI", "cs.LG"],
+        "arxivTitleFilters": [
+          "agent",
+          "multi-agent",
+          "orchestration",
+          "tool use",
+          "verifier",
+          "planner",
+          "router",
+          "reflection"
+        ],
+        "githubWatch": [
+          "anthropics/claude-agent-sdk-python",
+          "anthropics/claude-agent-sdk-typescript",
+          "openai/openai-agents-python",
+          "openai/openai-agents-js",
+          "langchain-ai/langgraph",
+          "langchain-ai/open_deep_research",
+          "letta-ai/letta",
+          "microsoft/autogen",
+          "ag2ai/ag2",
+          "crewAIInc/crewAI",
+          "google/adk-python",
+          "modelcontextprotocol/modelcontextprotocol",
+          "modelcontextprotocol/servers",
+          "pydantic/pydantic-ai",
+          "BerriAI/litellm"
+        ],
+        "blogs": [
+          "https://www.anthropic.com/engineering",
+          "https://www.anthropic.com/news",
+          "https://openai.com/blog",
+          "https://blog.langchain.dev",
+          "https://lilianweng.github.io/",
+          "https://simonwillison.net/",
+          "https://modelcontextprotocol.io/"
+        ],
+        "substacks": [
+          "https://www.latent.space/",
+          "https://www.interconnects.ai/"
+        ],
+        "openalexConceptIds": []
+      },
+      "brief": {
+        "sections": [
+          "new_releases",
+          "notable_papers",
+          "breaking_api_changes",
+          "deprecations",
+          "mcp_spec_delta",
+          "action_items"
+        ],
+        "maxWords": 900
+      }
+    },
+    {
+      "topicId": "eval_tracing_apple",
+      "title": "LLM eval, tracing, Apple on-device agents",
+      "rationale": "Frontier OS needs production-grade tracing (Langfuse/Phoenix/Braintrust) and native macOS hooks (App Intents, EventKit, Shortcuts) for the local sensing layer. Separate from agent frameworks because release cadence and vendor community are distinct.",
+      "cadence": "weekly",
+      "priority": "high",
+      "queries": [
+        "\"langfuse\" OR \"arize phoenix\" OR \"braintrust\" release changelog 2026",
+        "site:developer.apple.com \"app intents\" OR \"eventkit\" OR \"foundation models\" 2026",
+        "WWDC 2026 \"app intents\" agent OR assistant",
+        "\"inspect ai\" OR \"promptfoo\" OR \"ragas\" eval framework 2026",
+        "\"openinference\" OR \"opentelemetry-instrumentation-llm\" 2026",
+        "\"Apple Intelligence\" developer API 2026"
+      ],
+      "sources": {
+        "arxivCategories": ["cs.SE", "cs.LG", "cs.AI"],
+        "arxivTitleFilters": [
+          "evaluation",
+          "benchmark",
+          "tracing",
+          "observability",
+          "judge",
+          "grading",
+          "on-device",
+          "agentic eval"
+        ],
+        "githubWatch": [
+          "langfuse/langfuse",
+          "Arize-ai/phoenix",
+          "braintrustdata/braintrust-proxy",
+          "UKGovernmentBEIS/inspect_ai",
+          "promptfoo/promptfoo",
+          "explodinggradients/ragas",
+          "Arize-ai/openinference",
+          "openlit/openlit",
+          "traceloop/openllmetry",
+          "apple/ml-recurrent-drafter"
+        ],
+        "blogs": [
+          "https://langfuse.com/blog",
+          "https://arize.com/blog/",
+          "https://www.braintrust.dev/blog",
+          "https://developer.apple.com/news/",
+          "https://machinelearning.apple.com/",
+          "https://www.promptfoo.dev/blog/"
+        ],
+        "substacks": [],
+        "openalexConceptIds": []
+      },
+      "brief": {
+        "sections": [
+          "new_releases",
+          "wwdc_or_apple_api_delta",
+          "eval_framework_changes",
+          "tracing_protocol_changes",
+          "action_items"
+        ],
+        "maxWords": 800
+      }
+    },
+    {
+      "topicId": "crm_analytics_salesforce",
+      "title": "CRM Analytics, Tableau Next, Salesforce release train",
+      "rationale": "48 live dashboards in the SimCorp org. Wave API v66, Gen 2 datasets, Tableau Next (TN) migration path, Data Cloud semantics all move per SF seasonal release. Miss the release notes and dashboards break.",
+      "cadence": "monthly",
+      "priority": "high",
+      "queries": [
+        "Salesforce \"Spring '26\" OR \"Summer '26\" release notes CRM Analytics",
+        "\"Tableau Next\" migration CRM Analytics 2026",
+        "\"Wave REST API\" v67 OR v68 2026 changelog",
+        "SAQL OR \"Einstein Analytics\" deprecation 2026",
+        "site:salesforce.com Data Cloud \"CRM Analytics\" 2026",
+        "\"Agentforce\" analytics integration 2026"
+      ],
+      "sources": {
+        "arxivCategories": [],
+        "arxivTitleFilters": [],
+        "githubWatch": [
+          "forcedotcom/cli",
+          "salesforcecli/plugin-analytics",
+          "forcedotcom/sfdx-analytics",
+          "tableau/server-client-python"
+        ],
+        "blogs": [
+          "https://admin.salesforce.com/blog",
+          "https://developer.salesforce.com/blogs",
+          "https://www.tableau.com/blog",
+          "https://help.salesforce.com/s/articleView?id=release-notes.salesforce_release_notes.htm",
+          "https://architect.salesforce.com/"
+        ],
+        "substacks": [],
+        "openalexConceptIds": []
+      },
+      "brief": {
+        "sections": [
+          "release_highlights",
+          "wave_api_deltas",
+          "tableau_next_migration",
+          "deprecations_breaking",
+          "new_permissions_licenses",
+          "action_items"
+        ],
+        "maxWords": 1000
+      }
+    },
+    {
+      "topicId": "llm_training_kaggle",
+      "title": "LoRA / SFT / RLHF research for Kaggle Nemotron ($106K)",
+      "rationale": "Active competition. Need to track LoRA variants, data curation tricks, verifier-guided training, mamba/SSM if it resurges, and anything specific to Nemotron / small-LLM reasoning.",
+      "cadence": "weekly",
+      "priority": "high",
+      "queries": [
+        "\"LoRA\" OR \"QLoRA\" OR \"DoRA\" fine-tuning arxiv 2026",
+        "\"Nemotron\" training OR evaluation 2026 arxiv",
+        "\"data curation\" SFT reasoning LLM arxiv 2026",
+        "\"verifier\" OR \"reward model\" GRPO OR DPO 2026 arxiv",
+        "\"model soup\" OR \"weight averaging\" merging adapters 2026",
+        "site:kaggle.com Nemotron OR \"LLM efficiency\" leaderboard 2026"
+      ],
+      "sources": {
+        "arxivCategories": ["cs.LG", "cs.CL", "cs.AI", "stat.ML"],
+        "arxivTitleFilters": [
+          "LoRA",
+          "QLoRA",
+          "DoRA",
+          "fine-tuning",
+          "instruction tuning",
+          "preference optimization",
+          "reasoning",
+          "verifier",
+          "mamba",
+          "SSM",
+          "adapter",
+          "model merging"
+        ],
+        "githubWatch": [
+          "huggingface/peft",
+          "huggingface/trl",
+          "huggingface/transformers",
+          "unslothai/unsloth",
+          "NVIDIA/NeMo",
+          "NVIDIA/Megatron-LM",
+          "hiyouga/LLaMA-Factory",
+          "axolotl-ai-cloud/axolotl",
+          "state-spaces/mamba",
+          "arcee-ai/mergekit"
+        ],
+        "blogs": [
+          "https://huggingface.co/blog",
+          "https://developer.nvidia.com/blog/",
+          "https://www.kaggle.com/discussions",
+          "https://lilianweng.github.io/",
+          "https://sebastianraschka.com/blog/"
+        ],
+        "substacks": ["https://www.interconnects.ai/"],
+        "openalexConceptIds": []
+      },
+      "brief": {
+        "sections": [
+          "notable_arxiv",
+          "new_training_recipes",
+          "library_releases",
+          "kaggle_leaderboard_moves",
+          "compute_and_hardware_notes",
+          "action_items"
+        ],
+        "maxWords": 1000
+      }
+    },
+    {
+      "topicId": "quantum_derivatives",
+      "title": "Quantum computing for derivatives pricing (Azure Quantum, IonQ, QAOA)",
+      "rationale": "Research thread on options pricing via QAOA/QUBO/Heston on Azure Quantum + IonQ. Signal is mostly academic (arxiv quant-ph + q-fin) plus vendor blogs; OSS activity is modest so fewer repos, higher paper weight.",
+      "cadence": "monthly",
+      "priority": "medium",
+      "queries": [
+        "\"quantum\" \"option pricing\" OR \"derivative\" arxiv 2026",
+        "\"QAOA\" OR \"QUBO\" finance OR portfolio arxiv 2026",
+        "\"Heston\" quantum Monte Carlo 2026",
+        "site:ionq.com finance OR pricing 2026",
+        "site:learn.microsoft.com Azure Quantum Q# 2026",
+        "\"quantum amplitude estimation\" pricing 2026"
+      ],
+      "sources": {
+        "arxivCategories": ["quant-ph", "q-fin.CP", "q-fin.PR", "q-fin.RM"],
+        "arxivTitleFilters": [
+          "option pricing",
+          "derivative",
+          "amplitude estimation",
+          "QAOA",
+          "QUBO",
+          "Monte Carlo",
+          "Heston",
+          "portfolio",
+          "risk"
+        ],
+        "githubWatch": [
+          "qiskit-community/qiskit-finance",
+          "microsoft/qsharp",
+          "PennyLaneAI/pennylane",
+          "CQCL/tket",
+          "quantumlib/Cirq"
+        ],
+        "blogs": [
+          "https://ionq.com/resources",
+          "https://ionq.com/blog",
+          "https://azure.microsoft.com/en-us/blog/topics/quantum/",
+          "https://research.ibm.com/blog",
+          "https://pennylane.ai/blog/",
+          "https://quantum-journal.org/"
+        ],
+        "substacks": [],
+        "openalexConceptIds": []
+      },
+      "brief": {
+        "sections": [
+          "notable_arxiv",
+          "vendor_updates",
+          "pricing_method_advances",
+          "hardware_access_changes",
+          "action_items"
+        ],
+        "maxWords": 700
+      }
+    },
+    {
+      "topicId": "prediction_market_hft",
+      "title": "Prediction-market HFT, sports odds modeling, microstructure",
+      "rationale": "S16 complement arb is profitable; ongoing work on Polymarket/Kalshi/sportsbook microstructure. Signal is mostly paywalled (prop desks don't publish) + Polymarket ToS prohibits scraping. Lean on SSRN/arxiv q-fin, public vendor APIs, and a narrow set of practitioner blogs.",
+      "cadence": "weekly",
+      "priority": "medium",
+      "queries": [
+        "\"prediction market\" microstructure OR arbitrage arxiv 2026",
+        "\"Polymarket\" OR \"Kalshi\" OR \"PredictIt\" research 2026",
+        "\"sports betting\" market efficiency OR calibration arxiv 2026",
+        "\"limit order book\" OR \"market making\" reinforcement learning 2026",
+        "site:ssrn.com prediction market 2026",
+        "\"NBA\" OR \"NHL\" OR \"MLB\" betting model arxiv 2026"
+      ],
+      "sources": {
+        "arxivCategories": [
+          "q-fin.TR",
+          "q-fin.ST",
+          "q-fin.CP",
+          "cs.LG",
+          "stat.AP"
+        ],
+        "arxivTitleFilters": [
+          "prediction market",
+          "market making",
+          "limit order book",
+          "microstructure",
+          "arbitrage",
+          "sports betting",
+          "odds",
+          "calibration"
+        ],
+        "githubWatch": [
+          "Polymarket/py-clob-client",
+          "Polymarket/clob-client",
+          "Kalshi-Trading/KalshiStarterCodePython",
+          "stefan-jansen/machine-learning-for-trading",
+          "hudson-and-thames/mlfinlab"
+        ],
+        "blogs": [
+          "https://www.kalshi.com/blog",
+          "https://blog.polymarket.com/",
+          "https://mathletics.substack.com/",
+          "https://www.thespread.us/"
+        ],
+        "substacks": ["https://unusualwhales.substack.com/"],
+        "openalexConceptIds": []
+      },
+      "brief": {
+        "sections": [
+          "notable_papers",
+          "venue_api_changes",
+          "public_datasets",
+          "calibration_and_edge_ideas",
+          "regulatory_notes",
+          "action_items"
+        ],
+        "maxWords": 700
+      }
+    }
+  ]
+}

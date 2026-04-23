@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/policy-pack.schema.json",
+  "title": "FrontierOS Policy Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policyId",
+    "version",
+    "createdAt",
+    "defaults",
+    "approvals",
+    "notifications",
+    "spendControls"
+  ],
+  "properties": {
+    "policyId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+$"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowSideEffects",
+        "requireVerification",
+        "defaultApprovalClass"
+      ],
+      "properties": {
+        "allowSideEffects": {
+          "type": "boolean"
+        },
+        "requireVerification": {
+          "type": "boolean"
+        },
+        "defaultApprovalClass": {
+          "type": "integer",
+          "enum": [0, 1, 2, 3]
+        }
+      }
+    },
+    "approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alwaysHumanFor"
+      ],
+      "properties": {
+        "alwaysHumanFor": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "financial_action",
+              "destructive_action",
+              "external_message",
+              "credential_change",
+              "privilege_change",
+              "repo_publish"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "quietHours": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "spendControls": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runpodIdleMinutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dailySpendUsdSoftLimit": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dailySpendUsdHardLimit": {
+          "type": "number",
+          "minimum": 0
+        },
+        "localGpuMaxTempC": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

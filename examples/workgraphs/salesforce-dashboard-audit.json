@@ -1,0 +1,136 @@
+{
+  "graphId": "wg_salesforce_dashboard_audit_001",
+  "version": "v1",
+  "goal": "Audit the current Salesforce dashboard, recommend improvements, and optionally apply one approved change.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-08T09:00:00Z",
+  "priority": "high",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 1,
+    "requireHumanFor": [
+      "external_message",
+      "financial_action",
+      "data_deletion",
+      "prod_write"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 1800,
+    "maxToolCalls": 25,
+    "maxCostUsd": 5
+  },
+  "labels": [
+    "salesforce",
+    "dashboard",
+    "browser"
+  ],
+  "successCriteria": [
+    "Dashboard structure is captured in a normalized artifact.",
+    "At least three actionable improvement suggestions are returned.",
+    "One approved UI change is verified or cleanly skipped."
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1",
+      "kind": "browser_task",
+      "title": "Inspect current Salesforce dashboard",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "browser",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [],
+      "allowedTools": [
+        "salesforce.inspect-dashboard"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema",
+          "trace_grade"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "salesforce",
+            "command": "inspect-dashboard"
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n2",
+      "kind": "review",
+      "title": "Produce dashboard audit",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "codex_exec"
+      },
+      "approvalClass": 1,
+      "dependencies": [
+        "n1"
+      ],
+      "allowedTools": [
+        "salesforce.audit-dashboard"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema",
+          "trace_grade"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "salesforce",
+            "command": "audit-dashboard"
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n3",
+      "kind": "browser_task",
+      "title": "Apply one approved filter change",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "browser",
+        "executor": "native_cli"
+      },
+      "approvalClass": 2,
+      "dependencies": [
+        "n2"
+      ],
+      "allowedTools": [
+        "salesforce.set-filter"
+      ],
+      "verifierPolicy": {
+        "mode": "required_before_side_effect",
+        "checks": [
+          "policy",
+          "trace_grade",
+          "human_review"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "salesforce",
+            "command": "set-filter"
+          }
+        }
+      ]
+    }
+  ]
+}

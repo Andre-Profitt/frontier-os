@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/alert-event.schema.json",
+  "title": "FrontierOS Alert Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alertId",
+    "createdAt",
+    "source",
+    "category",
+    "severity",
+    "summary",
+    "status"
+  ],
+  "properties": {
+    "alertId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "cost",
+        "work",
+        "failure",
+        "health",
+        "security",
+        "recommendation"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "low", "medium", "high", "critical"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "acked", "resolved", "suppressed"]
+    },
+    "dedupeKey": {
+      "type": "string"
+    },
+    "recommendedActions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "traceId": {
+      "type": "string"
+    },
+    "context": {
+      "description": "Structured payload attached to the alert — carries watcher-specific state (snapshots, diffs, evidence objects) that is opaque to the AlertEvent consumer but inspectable in the ledger. Keep small; anything heavy belongs in a separate artifact event.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

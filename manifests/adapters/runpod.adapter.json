@@ -1,0 +1,48 @@
+{
+  "adapterId": "runpod",
+  "version": "v1",
+  "displayName": "RunPod Adapter",
+  "owner": "frontier-os",
+  "summary": "Read and control RunPod GPU pods via the GraphQL API to prevent idle spend.",
+  "transport": "http_api",
+  "modes": ["read", "propose", "apply", "undo"],
+  "approvalDefaults": {
+    "defaultClass": 1,
+    "billableClass": 2,
+    "destructiveClass": 3
+  },
+  "commands": [
+    {
+      "command": "list-pods",
+      "summary": "List all RunPod pods visible to the authenticated account with status, cost, and runtime metadata.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "pod-status",
+      "summary": "Return detailed status for a single pod by id.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "stop-pod",
+      "summary": "Stop a running pod (preserves state; does not destroy the volume).",
+      "supportedModes": ["propose", "apply", "undo"],
+      "sideEffectClass": "billable_action",
+      "verifierHints": ["policy", "trace_grade"],
+      "undoSupported": false
+    },
+    {
+      "command": "cost-summary",
+      "summary": "Aggregate the hourly cost and running-pod count across the account.",
+      "supportedModes": ["read"],
+      "sideEffectClass": "none",
+      "verifierHints": ["trace_grade"],
+      "undoSupported": false
+    }
+  ]
+}

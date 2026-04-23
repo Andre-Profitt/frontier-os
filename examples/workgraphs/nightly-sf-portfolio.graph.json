@@ -1,0 +1,74 @@
+{
+  "graphId": "wg_nightly_sf_portfolio_v1",
+  "version": "v1",
+  "goal": "Nightly server-side Salesforce portfolio inventory: pulls the user's dashboards, per-dashboard widget->report mapping via /analytics/dashboards/describe, batches Report LastRunDate, and writes the cross-dashboard shared+stale aggregate to the ledger. Ghost-Shift-safe: class 0, read-only, no DOM, no Chrome.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-19T00:00:00Z",
+  "priority": "normal",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 0,
+    "requireHumanFor": [
+      "billable_action",
+      "destructive_action",
+      "deploy",
+      "external_message",
+      "financial_action",
+      "auth_change"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 1800,
+    "maxToolCalls": 80,
+    "maxCostUsd": 0.5
+  },
+  "labels": [
+    "nightly",
+    "salesforce",
+    "portfolio-inventory",
+    "ghost-shift-safe"
+  ],
+  "successCriteria": [
+    "portfolio-inventory completes with status=success",
+    "observedState.dashboardCount >= 1",
+    "observedState.enrichedCount == observedState.dashboardCount",
+    "no class >= 1 nodes and no dangerous side effects"
+  ],
+  "nodes": [
+    {
+      "nodeId": "n1_inventory",
+      "kind": "research",
+      "title": "Pull nightly SF portfolio inventory",
+      "description": "Invoke salesforce.portfolio-inventory read mode against the preprod org, 30-day stale threshold, limit 40 dashboards. Serializes the cross-dashboard aggregate to observedState; ledger captures the full result as the invocation.end payload for cross-session comparison.",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "remote_api",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [],
+      "allowedTools": ["salesforce.portfolio-inventory"],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": ["trace_grade"]
+      },
+      "sideEffects": ["none"],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "adapterId": "salesforce",
+            "command": "portfolio-inventory",
+            "mode": "read",
+            "arguments": {
+              "targetOrg": "preprod",
+              "staleDays": 30,
+              "limit": 40
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

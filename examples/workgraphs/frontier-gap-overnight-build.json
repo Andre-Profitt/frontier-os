@@ -1,0 +1,378 @@
+{
+  "graphId": "wg_frontier_gap_overnight_build_v1",
+  "version": "v1",
+  "goal": "Overnight Codex build for the first safe Frontier OS gap-closure tranche: project registry plus ops readiness. The graph intentionally excludes daemon residency, MCP bridge activation, and privileged helper work.",
+  "tenantId": "personal",
+  "createdAt": "2026-04-21T02:20:00Z",
+  "priority": "high",
+  "status": "planned",
+  "approvalPolicy": {
+    "defaultClass": 1,
+    "requireHumanFor": [
+      "auth_change",
+      "billable_action",
+      "data_deletion",
+      "deploy",
+      "destructive_action",
+      "external_message",
+      "financial_action",
+      "prod_write",
+      "security_change"
+    ]
+  },
+  "budgets": {
+    "maxRuntimeSeconds": 10800,
+    "maxToolCalls": 80,
+    "maxCostUsd": 10
+  },
+  "labels": [
+    "overnight",
+    "ghost-shift-safe",
+    "frontier-os",
+    "project-registry",
+    "ops-readiness",
+    "codex-build"
+  ],
+  "context": {
+    "planRoot": "/Users/test/frontier-os/docs/plans",
+    "artifactDir": "/Users/test/.frontier/artifacts/frontier-gap-overnight-build",
+    "excludedTracks": [
+      "frontierd daemon residency",
+      "MCP bridge activation",
+      "privileged root helper",
+      "launchd load/unload or service mutation",
+      "external deploys or messages"
+    ]
+  },
+  "successCriteria": [
+    "Codex implements the read-only project registry tranche or leaves a concrete blocker report.",
+    "Codex implements the read-only ops readiness tranche or leaves a concrete blocker report.",
+    "`npm run typecheck` passes.",
+    "`frontier project list --json` succeeds.",
+    "`frontier project status --json` succeeds.",
+    "`frontier ops status --json` succeeds.",
+    "A final Codex summary is written under ~/.frontier/artifacts/frontier-gap-overnight-build/."
+  ],
+  "nodes": [
+    {
+      "nodeId": "n0_prepare_artifacts",
+      "kind": "dispatch",
+      "title": "Prepare overnight artifact directory",
+      "description": "Create the directory where Codex writes its final overnight summary.",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [],
+      "allowedTools": [
+        "mkdir"
+      ],
+      "verifierPolicy": {
+        "mode": "none"
+      },
+      "sideEffects": [
+        "local_write"
+      ],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/bin/mkdir",
+              "args": [
+                "-p",
+                "/Users/test/.frontier/artifacts/frontier-gap-overnight-build"
+              ],
+              "timeoutMs": 30000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n1_codex_build_registry_and_ops",
+      "kind": "code_change",
+      "title": "Run Codex non-interactively for project registry and ops readiness",
+      "description": "Use Codex CLI in workspace-write mode to implement the first safe tranche from docs/plans.",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli",
+        "model": "gpt-5.4",
+        "worktreeStrategy": "shared"
+      },
+      "approvalClass": 1,
+      "dependencies": [
+        "n0_prepare_artifacts"
+      ],
+      "allowedTools": [
+        "codex.exec"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema"
+        ]
+      },
+      "budgets": {
+        "maxRuntimeSeconds": 10800,
+        "maxToolCalls": 80
+      },
+      "retryPolicy": {
+        "maxAttempts": 1
+      },
+      "sideEffects": [
+        "repo_write",
+        "local_write"
+      ],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/Users/test/bin/codex",
+              "args": [
+                "exec",
+                "--cd",
+                "/Users/test/frontier-os",
+                "--full-auto",
+                "--sandbox",
+                "workspace-write",
+                "--output-last-message",
+                "/Users/test/.frontier/artifacts/frontier-gap-overnight-build/codex-final.md",
+                "-"
+              ],
+              "stdin": "You are Codex running as an overnight Frontier OS build worker. Implement only the first safe tranche from /Users/test/frontier-os/docs/plans: T1 project registry and T0 ops readiness. Do not implement frontierd daemon residency, MCP bridge activation, privileged helper/root work, launchd load/unload, deploys, external messaging, package installs, destructive actions, or billable actions.\n\nWork in /Users/test/frontier-os. Read docs/plans/README.md, docs/plans/project-registry.md, and docs/plans/ops-readiness.md. Make minimal code changes that fit the existing TypeScript CLI style.\n\nRequired deliverables:\n1. Project manifest schema and initial manifests for frontier-os, mlx-workbench, companion-platform, crm-analytics, kaggle-nemotron, salesforce-api, nexus, jarvis-menubar, and aegis.\n2. Project registry loader and CLI commands: frontier project list --json, frontier project inspect <id> --json, frontier project status [<id>] --json. If verify/smoke are too large, leave them documented and unimplemented rather than overbuilding.\n3. Read-only ops CLI: frontier ops status --json. It should report expected LaunchAgents, Ghost Shift queue counts, watcher/scheduler status, key log paths, and known MLX/Codex processes where practical. No repair side effects.\n4. Update docs only where needed to describe shipped commands.\n\nVerification gate before final response:\n- npm run typecheck\n- /Users/test/frontier-os/bin/frontier project list --json\n- /Users/test/frontier-os/bin/frontier project status --json\n- /Users/test/frontier-os/bin/frontier ops status --json\n\nRespect existing AGENTS.md rules. Do not touch unrelated projects except read-only probing. Do not commit. Do not remove user changes. Write a concise final summary with changed files, commands run, pass/fail results, and blockers if any.",
+              "cwd": "/Users/test/frontier-os",
+              "timeoutMs": 10800000
+            }
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "type": "report",
+          "location": "/Users/test/.frontier/artifacts/frontier-gap-overnight-build/codex-final.md",
+          "summary": "Codex final overnight build summary."
+        }
+      ]
+    },
+    {
+      "nodeId": "n2_typecheck",
+      "kind": "test_run",
+      "title": "Run Frontier OS TypeScript typecheck",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [
+        "n1_codex_build_registry_and_ops"
+      ],
+      "allowedTools": [
+        "npm.run.typecheck"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/usr/bin/env",
+              "args": [
+                "npm",
+                "run",
+                "typecheck"
+              ],
+              "cwd": "/Users/test/frontier-os",
+              "timeoutMs": 600000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n3_project_list",
+      "kind": "test_run",
+      "title": "Smoke project list command",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [
+        "n2_typecheck"
+      ],
+      "allowedTools": [
+        "frontier.project.list"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/Users/test/frontier-os/bin/frontier",
+              "args": [
+                "project",
+                "list",
+                "--json"
+              ],
+              "cwd": "/Users/test/frontier-os",
+              "timeoutMs": 120000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n4_project_status",
+      "kind": "test_run",
+      "title": "Smoke project status command",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [
+        "n3_project_list"
+      ],
+      "allowedTools": [
+        "frontier.project.status"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/Users/test/frontier-os/bin/frontier",
+              "args": [
+                "project",
+                "status",
+                "--json"
+              ],
+              "cwd": "/Users/test/frontier-os",
+              "timeoutMs": 120000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n5_ops_status",
+      "kind": "test_run",
+      "title": "Smoke ops status command",
+      "status": "queued",
+      "priority": "high",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 0,
+      "dependencies": [
+        "n4_project_status"
+      ],
+      "allowedTools": [
+        "frontier.ops.status"
+      ],
+      "verifierPolicy": {
+        "mode": "required",
+        "checks": [
+          "artifact_schema"
+        ]
+      },
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/Users/test/frontier-os/bin/frontier",
+              "args": [
+                "ops",
+                "status",
+                "--json"
+              ],
+              "cwd": "/Users/test/frontier-os",
+              "timeoutMs": 120000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "nodeId": "n6_ledger_completion",
+      "kind": "dispatch",
+      "title": "Log overnight build completion",
+      "status": "queued",
+      "priority": "normal",
+      "runtime": {
+        "plane": "linux",
+        "executor": "native_cli"
+      },
+      "approvalClass": 1,
+      "dependencies": [
+        "n5_ops_status"
+      ],
+      "allowedTools": [
+        "frontier.ledger.log"
+      ],
+      "verifierPolicy": {
+        "mode": "none"
+      },
+      "sideEffects": [
+        "local_write"
+      ],
+      "inputs": [
+        {
+          "type": "structured_payload",
+          "value": {
+            "cli": {
+              "command": "/Users/test/frontier-os/bin/frontier",
+              "args": [
+                "ledger",
+                "log",
+                "--agent",
+                "ghost-shift",
+                "--kind",
+                "agent.post_tool_use",
+                "--tool",
+                "codex-exec",
+                "--session",
+                "overnight-frontier-gap-build"
+              ],
+              "stdin": "{\"summary\":\"Overnight Frontier OS project registry and ops readiness build completed\",\"graphId\":\"wg_frontier_gap_overnight_build_v1\",\"artifact\":\"/Users/test/.frontier/artifacts/frontier-gap-overnight-build/codex-final.md\"}",
+              "cwd": "/Users/test/frontier-os",
+              "timeoutMs": 60000
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
