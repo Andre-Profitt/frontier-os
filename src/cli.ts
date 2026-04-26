@@ -3601,6 +3601,187 @@ async function cmdGhostQueue(args: ParsedArgs, pretty: boolean): Promise<void> {
   out({ queued: graphPath, destination: dest }, pretty);
 }
 
+// ---- builder family (PR R2: worktree manager) ----
+
+async function cmdBuilderSpawn(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager, BuilderRunError } =
+    await import("./builders/worktree-manager.ts");
+  const taskId =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const builderId =
+    typeof args.flags.builder === "string" ? args.flags.builder : undefined;
+  const taskClass =
+    typeof args.flags["task-class"] === "string"
+      ? args.flags["task-class"]
+      : undefined;
+  if (!taskId || !builderId || !taskClass) {
+    err({
+      error:
+        "builder spawn requires --task <id> --builder <id> --task-class <class>",
+    });
+    return;
+  }
+  const baseBranch =
+    typeof args.flags["base-branch"] === "string"
+      ? args.flags["base-branch"]
+      : undefined;
+  const modelKey =
+    typeof args.flags.model === "string" ? args.flags.model : undefined;
+
+  const mgr = new WorktreeManager();
+  try {
+    const run = mgr.spawn({
+      taskId,
+      builderId,
+      taskClass,
+      ...(baseBranch ? { baseBranch } : {}),
+      ...(modelKey ? { modelKey } : {}),
+    });
+    out(run, pretty);
+  } catch (e) {
+    if (e instanceof BuilderRunError) {
+      err({ error: e.message, details: e.details });
+      return;
+    }
+    throw e;
+  }
+}
+
+async function cmdBuilderList(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+  const mgr = new WorktreeManager();
+  const all = mgr.list();
+  const taskFilter =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const statusFilter =
+    typeof args.flags.status === "string" ? args.flags.status : undefined;
+  const filtered = all.filter((r) => {
+    if (taskFilter && r.taskId !== taskFilter) return false;
+    if (statusFilter && r.status !== statusFilter) return false;
+    return true;
+  });
+  out(
+    {
+      runs: filtered.map((r) => ({
+        runId: r.runId,
+        taskId: r.taskId,
+        builderId: r.builderId,
+        taskClass: r.taskClass,
+        status: r.status,
+        worktreePath: r.worktreePath,
+        createdAt: r.createdAt,
+        ...(r.modelKey ? { modelKey: r.modelKey } : {}),
+        ...(r.patch
+          ? {
+              patchFiles: r.patch.files.length,
+              patchSizeBytes: r.patch.sizeBytes,
+            }
+          : {}),
+      })),
+    },
+    pretty,
+  );
+}
+
+async function cmdBuilderGet(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+  const runId =
+    typeof args.flags["run-id"] === "string"
+      ? args.flags["run-id"]
+      : (args.positional[0] ?? "");
+  if (!runId) {
+    err({ error: "builder get requires --run-id <id> (or positional)" });
+    return;
+  }
+  const mgr = new WorktreeManager();
+  const run = mgr.get(runId);
+  if (!run) {
+    err({ error: `unknown runId: ${runId}` });
+    return;
+  }
+  out(run, pretty);
+}
+
+async function cmdBuilderCollect(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager, BuilderRunError } =
+    await import("./builders/worktree-manager.ts");
+  const runId =
+    typeof args.flags["run-id"] === "string"
+      ? args.flags["run-id"]
+      : (args.positional[0] ?? "");
+  if (!runId) {
+    err({ error: "builder collect requires --run-id <id>" });
+    return;
+  }
+  const mgr = new WorktreeManager();
+  try {
+    const run = mgr.collect(runId);
+    out(
+      {
+        runId: run.runId,
+        status: run.status,
+        collectedAt: run.collectedAt,
+        patch: run.patch
+          ? {
+              files: run.patch.files,
+              sizeBytes: run.patch.sizeBytes,
+              addedLines: run.patch.addedLines,
+              deletedLines: run.patch.deletedLines,
+              commitCount: run.patch.commitCount,
+            }
+          : null,
+      },
+      pretty,
+    );
+  } catch (e) {
+    if (e instanceof BuilderRunError) {
+      err({ error: e.message, details: e.details });
+      return;
+    }
+    throw e;
+  }
+}
+
+async function cmdBuilderRemove(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager, BuilderRunError } =
+    await import("./builders/worktree-manager.ts");
+  const runId =
+    typeof args.flags["run-id"] === "string"
+      ? args.flags["run-id"]
+      : (args.positional[0] ?? "");
+  if (!runId) {
+    err({ error: "builder remove requires --run-id <id>" });
+    return;
+  }
+  const force = args.flags.force === true;
+  const mgr = new WorktreeManager();
+  try {
+    const run = mgr.remove(runId, { force });
+    out(
+      { runId: run.runId, status: run.status, cleanedAt: run.cleanedAt },
+      pretty,
+    );
+  } catch (e) {
+    if (e instanceof BuilderRunError) {
+      err({ error: e.message, details: e.details });
+      return;
+    }
+    throw e;
+  }
+}
+
 // ---- work graph family (Phase 6) ----
 
 async function cmdWorkValidate(
@@ -4292,6 +4473,27 @@ async function main(): Promise<void> {
       default:
         return err({
           error: `unknown work subcommand: ${args.subcommand ?? "(none)"}`,
+        });
+    }
+  }
+
+  if (args.family === "builder") {
+    switch (args.subcommand) {
+      case "spawn":
+        return cmdBuilderSpawn(args, pretty);
+      case "list":
+        return cmdBuilderList(args, pretty);
+      case "get":
+        return cmdBuilderGet(args, pretty);
+      case "collect":
+        return cmdBuilderCollect(args, pretty);
+      case "remove":
+      case "clean":
+        return cmdBuilderRemove(args, pretty);
+      default:
+        return err({
+          error: `unknown builder subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["spawn", "list", "get", "collect", "remove", "clean"],
         });
     }
   }

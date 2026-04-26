@@ -30,6 +30,7 @@ const projectManifestSchema = load("project-manifest.schema.json");
 const commandEnvelopeSchema = load("command-envelope.schema.json");
 const commandResultSchema = load("command-result.schema.json");
 const skillSchema = load("skill.schema.json");
+const builderRunSchema = load("builder-run.schema.json");
 
 export const validateAdapterManifest: ValidateFunction = ajv.compile(
   adapterManifestSchema,
@@ -53,6 +54,8 @@ export const validateCommandEnvelope: ValidateFunction = ajv.compile(
 export const validateCommandResult: ValidateFunction =
   ajv.compile(commandResultSchema);
 export const validateSkill: ValidateFunction = ajv.compile(skillSchema);
+export const validateBuilderRun: ValidateFunction =
+  ajv.compile(builderRunSchema);
 
 // ---- TypeScript mirrors of the JSON schemas (kept in sync manually) ----
 

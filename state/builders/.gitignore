@@ -1,0 +1,6 @@
+# Builder run state — never committed. Each runId produces one JSON file
+# here at spawn() and gets updated through collect()/clean(). Worktrees
+# themselves live at <repo>/.worktrees/<runId>/ and are also ignored
+# (see top-level .gitignore).
+*
+!.gitignore
