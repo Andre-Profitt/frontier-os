@@ -44,13 +44,28 @@ const REPO_ROOT = resolve(HERE, "..", "..");
 const SUITE_PATH = resolve(HERE, "local-smoke-factory-quality.json");
 const LANE = "ai-stack-local-smoke";
 
-// Defensive timeout for read-only local subprocess calls (sqlite3 reads,
-// fixture seeds, find fingerprint). Local-file operations should complete
+// Defensive timeout for small local subprocess calls (sqlite3 fixture
+// setup/reads, find fingerprint). Local-file operations should complete
 // in milliseconds; 5s is well past the worst realistic case and prevents
 // an unrelated hang from blocking eval runs. The factory verifier
 // subprocesses (which actually run work) have their own larger timeouts
 // inside factories/<lane>/run.ts.
 const READONLY_SUBPROCESS_TIMEOUT_MS = 5_000;
+
+// Render a spawnSync result into a diagnostic string that surfaces
+// timeout failures clearly. On `timeout`, spawnSync sets `status=null`
+// and `signal="SIGTERM"`, and `stderr` may be empty — a plain
+// `${res.stderr}` log would be unhelpful. This helper joins the
+// signals/status/error/stderr fields that are actually populated.
+function subprocessFailure(res: ReturnType<typeof spawnSync>): string {
+  const parts: string[] = [];
+  if (res.error) parts.push(`error=${res.error.message}`);
+  parts.push(res.status !== null ? `status=${res.status}` : "status=null");
+  if (res.signal) parts.push(`signal=${res.signal}`);
+  const stderr = (res.stderr ?? "").toString().trim();
+  if (stderr) parts.push(`stderr=${stderr}`);
+  return parts.join(", ");
+}
 
 export type CriterionStatus = "passed" | "failed" | "not_applicable";
 
@@ -166,7 +181,7 @@ function seedFixtureLedger(
     timeout: READONLY_SUBPROCESS_TIMEOUT_MS,
   });
   if (res.status !== 0) {
-    throw new Error(`failed to seed fixture ledger: ${res.stderr}`);
+    throw new Error(`failed to seed fixture ledger: ${subprocessFailure(res)}`);
   }
 }
 
@@ -698,7 +713,7 @@ export function scoreC13(c: SuiteSpec["criteria"][number]): CriterionResult {
     timeout: READONLY_SUBPROCESS_TIMEOUT_MS,
   });
   if (res.status !== 0) {
-    return fail(c, `sqlite3 query failed: ${res.stderr}`);
+    return fail(c, `sqlite3 query failed: ${subprocessFailure(res)}`);
   }
   const lines = (res.stdout ?? "").trim().split("\n").filter(Boolean);
   // Group by session.

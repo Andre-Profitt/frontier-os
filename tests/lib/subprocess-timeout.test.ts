@@ -48,8 +48,9 @@ test("spawnSync timeout kills a hung subprocess and returns control quickly", ()
   );
 });
 
-test("spawnSync without timeout completes a quick subprocess normally", () => {
-  // Sanity check that the timeout option doesn't break the happy path.
+test("spawnSync timeout does not affect a quick subprocess", () => {
+  // Sanity check that a timeout option that does not fire leaves the
+  // happy path untouched.
   const res = spawnSync("true", [], {
     encoding: "utf8",
     timeout: 5_000,
