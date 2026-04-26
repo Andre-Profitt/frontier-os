@@ -323,3 +323,263 @@ test("REPO_ROOT resolution sanity", () => {
     existsSync(resolve(REPO_ROOT, "factories", LIVE_LANE, "factory.json")),
   );
 });
+
+// --- alert filter: legacy + factory wrapper (PR #2 review fix) -------------
+
+interface FixtureAlert {
+  alertId: string;
+  severity: string;
+  category: string;
+  source: string;
+  summary: string;
+  ts: string;
+  actor?: string;
+}
+
+function seedFixtureLedger(dbPath: string, alerts: FixtureAlert[]): void {
+  // Schema mirrors the production ledger (src/ledger/index.ts) just enough
+  // for the alert query to exercise. PRAGMA query_only is set in the
+  // production query path; the fixture is seeded with normal writes.
+  const ddl = `
+    CREATE TABLE IF NOT EXISTS sessions (
+      session_id TEXT PRIMARY KEY,
+      started_at TEXT NOT NULL,
+      label TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
+      last_event_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS events (
+      event_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      offset INTEGER NOT NULL,
+      ts TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      actor TEXT,
+      trace_id TEXT,
+      payload TEXT NOT NULL
+    );
+    INSERT INTO sessions (session_id, started_at) VALUES ('ses_fixture', '2026-04-26T00:00:00Z');
+  `;
+  const inserts = alerts
+    .map((a, i) => {
+      const payload = JSON.stringify({
+        alertId: a.alertId,
+        severity: a.severity,
+        category: a.category,
+        source: a.source,
+        summary: a.summary,
+      }).replace(/'/g, "''");
+      const actor =
+        a.actor === undefined ? "NULL" : `'${a.actor.replace(/'/g, "''")}'`;
+      return `INSERT INTO events (event_id, session_id, offset, ts, kind, actor, trace_id, payload) VALUES ('evt_${i}', 'ses_fixture', ${i}, '${a.ts}', 'alert', ${actor}, NULL, '${payload}');`;
+    })
+    .join("\n");
+  const res = spawnSync("sqlite3", [dbPath, ddl + inserts], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) {
+    throw new Error(`failed to seed fixture ledger: ${res.stderr}`);
+  }
+}
+
+function nowIso(offsetSeconds = 0): string {
+  return new Date(Date.now() + offsetSeconds * 1000).toISOString();
+}
+
+test("alert filter: matches factory wrapper alert (source = factory.<lane>)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxpack-alerts-"));
+  const dbPath = join(dir, "ledger.db");
+  try {
+    seedFixtureLedger(dbPath, [
+      {
+        alertId: "factory.ai-stack-local-smoke-20260426-001",
+        severity: "high",
+        category: "health",
+        source: "factory.ai-stack-local-smoke",
+        summary: "Factory ai-stack-local-smoke: verifier failed",
+        ts: nowIso(-3600),
+      },
+    ]);
+    const pack = generateContextPack({ lane: LIVE_LANE, ledgerDb: dbPath });
+    assert.ok(pack.recentAlerts !== null);
+    assert.equal(pack.recentAlerts!.length, 1);
+    assert.equal(pack.recentAlerts![0]!.source, "factory.ai-stack-local-smoke");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alert filter: matches legacy lane alert (source = ai-stack-local-smoke, alertId = ai-stack-local-smoke-...)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxpack-alerts-"));
+  const dbPath = join(dir, "ledger.db");
+  try {
+    seedFixtureLedger(dbPath, [
+      {
+        alertId: "ai-stack-local-smoke-20260425-035014",
+        severity: "high",
+        category: "health",
+        source: "ai-stack-local-smoke",
+        summary: "AI Stack local smoke failed",
+        ts: nowIso(-7200),
+      },
+    ]);
+    const pack = generateContextPack({ lane: LIVE_LANE, ledgerDb: dbPath });
+    assert.ok(pack.recentAlerts !== null);
+    assert.equal(pack.recentAlerts!.length, 1);
+    assert.equal(
+      pack.recentAlerts![0]!.alertId,
+      "ai-stack-local-smoke-20260425-035014",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alert filter: combined fixture — factory + legacy included, unrelated excluded", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxpack-alerts-"));
+  const dbPath = join(dir, "ledger.db");
+  try {
+    seedFixtureLedger(dbPath, [
+      {
+        alertId: "factory.ai-stack-local-smoke-20260426-001",
+        severity: "high",
+        category: "health",
+        source: "factory.ai-stack-local-smoke",
+        summary: "Factory wrapper failure",
+        ts: nowIso(-1800),
+      },
+      {
+        alertId: "ai-stack-local-smoke-20260425-035014",
+        severity: "high",
+        category: "health",
+        source: "ai-stack-local-smoke",
+        summary: "AI Stack local smoke failed",
+        ts: nowIso(-3600),
+      },
+      {
+        alertId: "unrelated-20260426-x",
+        severity: "medium",
+        category: "health",
+        source: "some-other-watcher",
+        summary: "Unrelated alert from a different lane",
+        ts: nowIso(-1200),
+      },
+    ]);
+    const pack = generateContextPack({ lane: LIVE_LANE, ledgerDb: dbPath });
+    assert.ok(pack.recentAlerts !== null);
+    const ids = pack.recentAlerts!.map((a) => a.alertId).sort();
+    assert.deepEqual(ids, [
+      "ai-stack-local-smoke-20260425-035014",
+      "factory.ai-stack-local-smoke-20260426-001",
+    ]);
+    // Unrelated alert must not appear.
+    assert.ok(
+      !ids.includes("unrelated-20260426-x"),
+      "unrelated alert should be excluded by the filter",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alert filter: matches summary keyword fallback (e.g. 'local smoke' phrase)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxpack-alerts-"));
+  const dbPath = join(dir, "ledger.db");
+  try {
+    // Source/actor/alertId do NOT reference the lane id directly, but the
+    // summary contains the configured keyword "local smoke". The filter
+    // should still surface this so historic, non-namespaced alerts are
+    // not lost.
+    seedFixtureLedger(dbPath, [
+      {
+        alertId: "evt_misc_001",
+        severity: "high",
+        category: "health",
+        source: "ai-stack",
+        summary: "Local smoke verifier hit unexpected timeout",
+        ts: nowIso(-1800),
+      },
+    ]);
+    const pack = generateContextPack({ lane: LIVE_LANE, ledgerDb: dbPath });
+    assert.ok(pack.recentAlerts !== null);
+    assert.equal(pack.recentAlerts!.length, 1);
+    assert.match(
+      pack.recentAlerts![0]!.summary,
+      /Local smoke verifier hit unexpected timeout/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alert filter: markdown and --json contain the same alert records (consistency)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxpack-alerts-"));
+  const dbPath = join(dir, "ledger.db");
+  try {
+    seedFixtureLedger(dbPath, [
+      {
+        alertId: "factory.ai-stack-local-smoke-20260426-002",
+        severity: "high",
+        category: "health",
+        source: "factory.ai-stack-local-smoke",
+        summary: "Factory failure — verifier exit=1",
+        ts: nowIso(-900),
+      },
+      {
+        alertId: "ai-stack-local-smoke-20260425-035014",
+        severity: "high",
+        category: "health",
+        source: "ai-stack-local-smoke",
+        summary: "AI Stack local smoke failed",
+        ts: nowIso(-7200),
+      },
+    ]);
+    const pack = generateContextPack({ lane: LIVE_LANE, ledgerDb: dbPath });
+    assert.ok(pack.recentAlerts !== null);
+    assert.equal(pack.recentAlerts!.length, 2);
+
+    const md = renderMarkdown(pack);
+    // The label was broadened per PR #2 review — confirm the new heading and
+    // intro line are both present.
+    assert.match(
+      md,
+      /## Recent ai-stack-local-smoke alerts \(legacy \+ factory wrapper\)/,
+    );
+    assert.match(md, /Read-only ledger query/);
+    for (const a of pack.recentAlerts!) {
+      assert.ok(
+        md.includes(a.alertId),
+        `markdown missing alertId ${a.alertId}`,
+      );
+    }
+
+    // Round-trip the ContextPack through JSON.stringify/parse (what the
+    // --json flag emits) and confirm the alert records are identical.
+    const jsonRound: ContextPack = JSON.parse(JSON.stringify(pack));
+    assert.deepEqual(jsonRound.recentAlerts, pack.recentAlerts);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alert filter: empty fixture returns empty array (no false matches)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxpack-alerts-"));
+  const dbPath = join(dir, "ledger.db");
+  try {
+    seedFixtureLedger(dbPath, [
+      {
+        alertId: "completely-unrelated-001",
+        severity: "low",
+        category: "other",
+        source: "totally-different-source",
+        summary: "no overlap whatsoever",
+        ts: nowIso(-1800),
+      },
+    ]);
+    const pack = generateContextPack({ lane: LIVE_LANE, ledgerDb: dbPath });
+    assert.ok(pack.recentAlerts !== null);
+    assert.equal(pack.recentAlerts!.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

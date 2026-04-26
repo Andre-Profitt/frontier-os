@@ -89,6 +89,7 @@
       "passed": null,
       "failed": "high",
       "ambiguous": "medium"
-    }
+    },
+    "summaryKeywords": ["local smoke", "ai stack local smoke"]
   }
 }

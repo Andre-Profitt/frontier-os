@@ -82,6 +82,7 @@ export interface FactoryRef {
     source: string;
     category: string;
     severityByFinalClassification: Record<string, string | null>;
+    summaryKeywords?: string[];
   };
 }
 
@@ -200,6 +201,7 @@ function readFactoryRef(repoRoot: string, lane: string): FactoryRef {
       source: string;
       category: string;
       severityByFinalClassification: Record<string, string | null>;
+      summaryKeywords?: string[];
     };
   };
   const killSwitchAbs = resolve(repoRoot, spec.policy.killSwitchFile);
@@ -260,17 +262,42 @@ function readEvidenceSummary(
   return { dir, committedFiles, runArtifactCount };
 }
 
+function escapeSqlSingleQuotes(s: string): string {
+  return s.replace(/'/g, "''");
+}
+
+// Alert filter — broadened per GPT Pro PR #2 review. The pack must surface
+// BOTH the new factory wrapper alerts (source=factory.<lane>) AND the
+// legacy/local-smoke alerts (source/actor/alertId referencing the bare lane
+// id) so an agent can see the historic-failure class of alert that
+// motivated this factory in the first place. Read-only via sqlite3 CLI
+// with PRAGMA query_only — same approach as scripts/notify-alerts.sh.
 function readRecentAlertsForLane(
   ledgerDb: string,
+  factoryId: string,
   alertSource: string,
+  summaryKeywords: string[],
   lookbackDays: number,
 ): AlertRecord[] | null {
   if (!existsSync(ledgerDb)) return null;
-  // Read-only via sqlite3 CLI with PRAGMA query_only — same approach as
-  // scripts/notify-alerts.sh. No ledger writes from this code path.
   const sinceIso = new Date(
     Date.now() - lookbackDays * 24 * 3600 * 1000,
   ).toISOString();
+  const factoryIdEsc = escapeSqlSingleQuotes(factoryId);
+  const alertSourceEsc = escapeSqlSingleQuotes(alertSource);
+  const sinceIsoEsc = escapeSqlSingleQuotes(sinceIso);
+  const orClauses: string[] = [
+    `COALESCE(json_extract(payload, '$.source'), '') LIKE '%${alertSourceEsc}%'`,
+    `COALESCE(json_extract(payload, '$.source'), '') LIKE '%${factoryIdEsc}%'`,
+    `COALESCE(actor, '') LIKE '%${factoryIdEsc}%'`,
+    `COALESCE(json_extract(payload, '$.alertId'), '') LIKE '${factoryIdEsc}-%'`,
+  ];
+  for (const kw of summaryKeywords) {
+    const k = escapeSqlSingleQuotes(kw);
+    orClauses.push(
+      `LOWER(COALESCE(json_extract(payload, '$.summary'), '')) LIKE '%${k.toLowerCase()}%'`,
+    );
+  }
   const sql = [
     "PRAGMA query_only = 1;",
     "SELECT",
@@ -282,8 +309,10 @@ function readRecentAlertsForLane(
     "  ts",
     "FROM events",
     "WHERE kind = 'alert'",
-    `  AND ts >= '${sinceIso}'`,
-    `  AND COALESCE(json_extract(payload, '$.source'), actor, '') LIKE '%${alertSource.replace(/'/g, "''")}%'`,
+    `  AND ts >= '${sinceIsoEsc}'`,
+    "  AND (",
+    "    " + orClauses.join("\n    OR "),
+    "  )",
     "ORDER BY ts DESC",
     "LIMIT 20;",
   ].join("\n");
@@ -345,7 +374,9 @@ export function generateContextPack(opts: PackOptions): ContextPack {
       opts.ledgerDb ?? resolve(homedir(), ".frontier", "ledger.db");
     recentAlerts = readRecentAlertsForLane(
       ledgerDb,
+      lane.factoryId,
       lane.alert.source,
+      lane.alert.summaryKeywords ?? [],
       opts.alertLookbackDays ?? 7,
     );
     if (recentAlerts === null) {
@@ -513,7 +544,11 @@ export function renderMarkdown(pack: ContextPack): string {
   );
   push("");
 
-  push("## Recent alerts (read-only ledger query)");
+  push(`## Recent ${pack.lane.factoryId} alerts (legacy + factory wrapper)`);
+  push("");
+  push(
+    "Read-only ledger query. Matches alerts whose source/actor/alertId references this lane's id, the factory's own alert source, or any configured summary keywords — so historic pre-factory alerts and new factory-wrapper alerts both surface here.",
+  );
   push("");
   if (pack.recentAlerts === null) {
     push("- (ledger not readable; alerts not queried)");
