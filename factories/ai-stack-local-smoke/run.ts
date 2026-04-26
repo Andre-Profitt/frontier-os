@@ -708,9 +708,13 @@ export async function runFactoryCell(
 }
 
 // CLI entry — `node --import tsx factories/ai-stack-local-smoke/run.ts`
+// Strict isMain: only true when this exact file is the CLI entry point.
+// The previous fallback `argv[1]?.endsWith("run.ts")` triggered for any
+// other tsx file named run.ts (e.g., evals/factory-quality/run.ts), which
+// caused the factory CLI to fire on import. Fixed.
 const isMain =
-  import.meta.url === `file://${process.argv[1]}` ||
-  process.argv[1]?.endsWith("run.ts");
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
 if (isMain) {
   runFactoryCell()
     .then((result) => {

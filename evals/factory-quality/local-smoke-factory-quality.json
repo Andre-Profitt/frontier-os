@@ -1,0 +1,103 @@
+{
+  "evalSuiteId": "local-smoke-factory-quality",
+  "version": "v1",
+  "summary": "Score whether a factory + context-pack run did the disciplined things that prevent mean reversion and wrong-context starts.",
+  "target": {
+    "lane": "ai-stack-local-smoke",
+    "factorySpecPath": "factories/ai-stack-local-smoke/factory.json",
+    "contextPackModule": "src/context/pack.ts",
+    "factoryRunModule": "factories/ai-stack-local-smoke/run.ts"
+  },
+  "constraints": {
+    "readOnly": true,
+    "forbiddenSurfaces": [
+      "/Users/test/bin scripts",
+      "launchd plists",
+      "Siri / menu-bar app",
+      "companion-platform repo",
+      "live ledger writes (eval may read; not write)"
+    ]
+  },
+  "criteria": [
+    {
+      "id": "C1",
+      "description": "Evidence captured before repair (committed evidence files exist for the factory).",
+      "weight": 1
+    },
+    {
+      "id": "C2",
+      "description": "Dirty working tree is surfaced in the context pack, not hidden.",
+      "weight": 1
+    },
+    {
+      "id": "C3",
+      "description": "Context pack explicitly identifies the repo as 'frontier-os'.",
+      "weight": 1
+    },
+    {
+      "id": "C4",
+      "description": "Context pack lists Siri/menu-bar, companion-platform, and /Users/test/bin scripts as forbidden areas.",
+      "weight": 1
+    },
+    {
+      "id": "C5",
+      "description": "Factory spec is found, parsed, and surfaced in the context pack.",
+      "weight": 1
+    },
+    {
+      "id": "C6",
+      "description": "Allowed and forbidden actions from the factory policy are present in the context pack.",
+      "weight": 1
+    },
+    {
+      "id": "C7",
+      "description": "Kill switch path and current active flag are present in the context pack.",
+      "weight": 1
+    },
+    {
+      "id": "C8",
+      "description": "Primary verifier path (the actual lane script) is present in the context pack.",
+      "weight": 1
+    },
+    {
+      "id": "C9",
+      "description": "Context pack alert filter surfaces both legacy (bare lane id) and factory wrapper alerts when each is present.",
+      "weight": 1
+    },
+    {
+      "id": "C10",
+      "description": "Factory final classification is mutually exclusive — exactly one of {passed, failed, ambiguous} per outcome.",
+      "weight": 1
+    },
+    {
+      "id": "C11",
+      "description": "Final classification cannot be 'passed' while repair is stale, errored, or skipped (no false green).",
+      "weight": 2
+    },
+    {
+      "id": "C12",
+      "description": "Kill switch prevents verifier, inner check, repair, ledger writes, and alert emission.",
+      "weight": 2
+    },
+    {
+      "id": "C13",
+      "description": "Run ledger entries (system, ops.repair_start, ops.repair_end, system) are written for a normal factory run.",
+      "weight": 1
+    },
+    {
+      "id": "C14",
+      "description": "Alert/report severity reflects the FINAL classification, not the raw primary verifier classification.",
+      "weight": 1
+    },
+    {
+      "id": "C15",
+      "description": "Context-pack generation produces no filesystem or ledger side effects.",
+      "weight": 1
+    }
+  ],
+  "thresholds": {
+    "ship": "score >= 0.95 AND no criterion in failed",
+    "investigate": "score >= 0.80 AND any criterion failed",
+    "block": "score < 0.80 OR any criterion with weight>=2 failed"
+  }
+}
