@@ -882,6 +882,10 @@ async function localTool(
     }
     case "frontier.approval_approve": {
       const { approvePendingTrace } = await import("../approvals/queue.ts");
+      const {
+        dispatchCommandIfRunnable,
+        dispatchedWorkerForCommand,
+      } = await import("../commands/dispatch.ts");
       const body = approvalApproveBody(input);
       const traceId = String(body.traceId);
       const actor = stringFromUnknown(body.actor) ?? "mcp";
@@ -894,9 +898,10 @@ async function localTool(
       const approval = approvePendingTrace(approvalInput);
       const autoResume = booleanFromUnknown(body.resume);
       const store = new CommandStore();
+      let resumedCommand = null;
       try {
         const command = store.getByTraceId(traceId);
-        const resumedCommand =
+        resumedCommand =
           autoResume !== false && command?.status === "blocked_approval"
             ? store.resume({
                 commandId: command.commandId,
@@ -904,21 +909,49 @@ async function localTool(
                 actor,
               })
             : null;
-        return {
-          ...approval,
-          resumedCommand,
-        };
       } finally {
         store.close();
       }
+      const dispatched =
+        resumedCommand === null
+          ? null
+          : await dispatchCommandIfRunnable({
+              commandId: resumedCommand.commandId,
+              workerId: "mcp",
+            });
+      return {
+        ...approval,
+        resumedCommand: dispatched?.command ?? resumedCommand,
+        ...(resumedCommand &&
+        dispatchedWorkerForCommand(resumedCommand.commandId, dispatched?.worker ?? null)
+          ? { worker: dispatched?.worker ?? null }
+          : {}),
+        ...(dispatched?.dispatchError ? { dispatchError: dispatched.dispatchError } : {}),
+      };
     }
     case "frontier.command_submit": {
       const store = new CommandStore();
+      const {
+        dispatchCommandIfRunnable,
+        dispatchedWorkerForCommand,
+      } = await import("../commands/dispatch.ts");
+      let command = null;
       try {
-        return { command: store.submit(commandSubmitInput(input)) };
+        command = store.submit(commandSubmitInput(input));
       } finally {
         store.close();
       }
+      const dispatched = await dispatchCommandIfRunnable({
+        commandId: command.commandId,
+        workerId: "mcp",
+      });
+      return {
+        command: dispatched.command ?? command,
+        ...(dispatchedWorkerForCommand(command.commandId, dispatched.worker)
+          ? { worker: dispatched.worker }
+          : {}),
+        ...(dispatched.dispatchError ? { dispatchError: dispatched.dispatchError } : {}),
+      };
     }
     case "frontier.command_list": {
       const store = new CommandStore();
@@ -974,24 +1007,38 @@ async function localTool(
     case "frontier.command_resume": {
       const request = commandResumeRequest(input);
       const store = new CommandStore();
+      const {
+        dispatchCommandIfRunnable,
+        dispatchedWorkerForCommand,
+      } = await import("../commands/dispatch.ts");
+      let command = null;
       try {
-        return {
-          command: store.resume({
-            commandId: request.commandId,
-            ...(typeof request.body.approval === "string"
-              ? { approvalTraceId: request.body.approval }
-              : {}),
-            ...(typeof request.body.actor === "string"
-              ? { actor: request.body.actor }
-              : {}),
-            ...(isRecord(request.body.resumePayload)
-              ? { resumePayload: request.body.resumePayload }
-              : {}),
-          }),
-        };
+        command = store.resume({
+          commandId: request.commandId,
+          ...(typeof request.body.approval === "string"
+            ? { approvalTraceId: request.body.approval }
+            : {}),
+          ...(typeof request.body.actor === "string"
+            ? { actor: request.body.actor }
+            : {}),
+          ...(isRecord(request.body.resumePayload)
+            ? { resumePayload: request.body.resumePayload }
+            : {}),
+        });
       } finally {
         store.close();
       }
+      const dispatched = await dispatchCommandIfRunnable({
+        commandId: command.commandId,
+        workerId: "mcp",
+      });
+      return {
+        command: dispatched.command ?? command,
+        ...(dispatchedWorkerForCommand(command.commandId, dispatched.worker)
+          ? { worker: dispatched.worker }
+          : {}),
+        ...(dispatched.dispatchError ? { dispatchError: dispatched.dispatchError } : {}),
+      };
     }
     case "frontier.command_retry": {
       const request = commandOperatorRequest(input);

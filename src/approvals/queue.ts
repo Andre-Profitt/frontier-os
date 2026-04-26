@@ -1,8 +1,18 @@
-import { approveTrace, parseTtlMs, type ApprovalGrant } from "../policy/evaluator.ts";
+import {
+  approveTrace,
+  denyTrace,
+  parseTtlMs,
+  type ApprovalDenial,
+  type ApprovalGrant,
+} from "../policy/evaluator.ts";
 import { getLedger } from "../ledger/index.ts";
 import type { LedgerEvent } from "../ledger/events.ts";
 
-export type ApprovalRequestStatus = "pending" | "approved" | "consumed";
+export type ApprovalRequestStatus =
+  | "pending"
+  | "approved"
+  | "consumed"
+  | "denied";
 
 export interface ApprovalQueueOptions {
   limit?: number;
@@ -44,15 +54,24 @@ export interface ApprovalGrantSummary {
   consumed: boolean;
 }
 
+export interface ApprovalDenialSummary {
+  traceId: string;
+  actor: string;
+  deniedAt: string;
+  reason: string;
+}
+
 export interface ApprovalQueue {
   generatedAt: string;
   pendingCount: number;
   approvedCount: number;
   consumedCount: number;
+  deniedCount: number;
   expiredGrantCount: number;
   pending: ApprovalRequest[];
   approved: ApprovalRequest[];
   consumed: ApprovalRequest[];
+  denied: ApprovalRequest[];
   recentGrants: ApprovalGrantSummary[];
   workAwaitingApproval: LedgerEvent[];
   ghostBlocked: LedgerEvent[];
@@ -63,6 +82,13 @@ export interface ApprovalApproveResult {
   traceId: string;
   request: ApprovalRequest;
   grant: ApprovalGrantSummary;
+}
+
+export interface ApprovalDenyResult {
+  status: "denied" | "already_denied";
+  traceId: string;
+  request: ApprovalRequest;
+  denial: ApprovalDenialSummary;
 }
 
 const DEFAULT_TTL = "15m";
@@ -92,6 +118,7 @@ export function approvalQueue(options: ApprovalQueueOptions = {}): ApprovalQueue
       activeGrantByTrace.set(grant.traceId, grant);
     }
   }
+  const denialByTrace = latestDenialsByTrace(ledger);
   const consumedTraceIds = new Set(
     grantSummaries
       .filter((grant) => grant.consumed)
@@ -100,7 +127,7 @@ export function approvalQueue(options: ApprovalQueueOptions = {}): ApprovalQueue
 
   const requests = approvalRequestEvents(ledger)
     .map((event) =>
-      requestFromEvent(event, activeGrantByTrace, consumedTraceIds),
+      requestFromEvent(event, activeGrantByTrace, consumedTraceIds, denialByTrace),
     )
     .filter((request): request is ApprovalRequest => request !== null)
     .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
@@ -114,15 +141,20 @@ export function approvalQueue(options: ApprovalQueueOptions = {}): ApprovalQueue
   const consumed = includeResolved
     ? unique.filter((request) => request.status === "consumed").slice(0, limit)
     : [];
+  const denied = includeResolved
+    ? unique.filter((request) => request.status === "denied").slice(0, limit)
+    : [];
   return {
     generatedAt,
     pendingCount: pending.length,
     approvedCount: approved.length,
     consumedCount: unique.filter((request) => request.status === "consumed").length,
+    deniedCount: unique.filter((request) => request.status === "denied").length,
     expiredGrantCount: grantSummaries.filter((grant) => grant.expired).length,
     pending,
     approved,
     consumed,
+    denied,
     recentGrants: grantSummaries.slice(0, limit),
     workAwaitingApproval: ledger.findEventsByKind("work.awaiting_approval", limit),
     ghostBlocked: ledger.findEventsByKind("ghost.graph_blocked", limit),
@@ -166,6 +198,44 @@ export function approvePendingTrace(input: {
   };
 }
 
+export function denyPendingTrace(input: {
+  traceId: string;
+  actor?: string;
+  reason?: string;
+}): ApprovalDenyResult {
+  const queue = approvalQueue({ limit: 100, includeResolved: true });
+  const request =
+    queue.pending.find((candidate) => candidate.traceId === input.traceId) ??
+    queue.approved.find((candidate) => candidate.traceId === input.traceId) ??
+    queue.denied.find((candidate) => candidate.traceId === input.traceId);
+  if (!request) {
+    throw new Error(`no pending approval request for trace ${input.traceId}`);
+  }
+  if (request.status === "denied") {
+    const denial = latestDenialForTrace(getLedger(), input.traceId);
+    if (!denial) {
+      throw new Error(`trace ${input.traceId} is denied but missing denial event`);
+    }
+    return {
+      status: "already_denied",
+      traceId: input.traceId,
+      request,
+      denial,
+    };
+  }
+  const denial = denyTrace({
+    traceId: input.traceId,
+    actor: input.actor ?? "operator",
+    ...(input.reason !== undefined ? { reason: input.reason } : {}),
+  });
+  return {
+    status: "denied",
+    traceId: input.traceId,
+    request,
+    denial: denialSummaryFromDenial(denial),
+  };
+}
+
 function approvalRequestEvents(ledger: ReturnType<typeof getLedger>): LedgerEvent[] {
   return [
     ...ledger.findEventsByKind("ops.repair_start", 1000),
@@ -177,6 +247,7 @@ function requestFromEvent(
   event: LedgerEvent,
   activeGrantByTrace: Map<string, ApprovalGrantSummary>,
   consumedTraceIds: Set<string>,
+  denialByTrace: Map<string, ApprovalDenialSummary>,
 ): ApprovalRequest | null {
   const payload = event.payload;
   if (event.kind === "ops.repair_start" && !record(payload.before).label) {
@@ -192,11 +263,14 @@ function requestFromEvent(
   const approvalClass = numberOrNull(action.approvalClass);
   if (approvalClass !== 2) return null;
   const activeGrant = activeGrantByTrace.get(traceId) ?? null;
+  const denied = denialByTrace.get(traceId) ?? null;
   const status: ApprovalRequestStatus = consumedTraceIds.has(traceId)
     ? "consumed"
-    : activeGrant
-      ? "approved"
-      : "pending";
+    : denied
+      ? "denied"
+      : activeGrant
+        ? "approved"
+        : "pending";
   const args = record(action.arguments);
   const verb = stringOrNull(action.verb) ?? "unknown";
   return {
@@ -261,6 +335,57 @@ function grantSummary(
     ttlSeconds: payload.ttlSeconds,
     expired: Date.parse(payload.expiresAt) <= nowMs,
     consumed: false,
+  };
+}
+
+function latestDenialsByTrace(
+  ledger: ReturnType<typeof getLedger>,
+): Map<string, ApprovalDenialSummary> {
+  const denied = new Map<string, ApprovalDenialSummary>();
+  const items = ledger
+    .findEventsByKind("policy.approval_denied", 1000)
+    .map((event) => denialSummary(event))
+    .filter((item): item is ApprovalDenialSummary => item !== null)
+    .sort((a, b) => b.deniedAt.localeCompare(a.deniedAt));
+  for (const item of items) {
+    if (!denied.has(item.traceId)) {
+      denied.set(item.traceId, item);
+    }
+  }
+  return denied;
+}
+
+function latestDenialForTrace(
+  ledger: ReturnType<typeof getLedger>,
+  traceId: string,
+): ApprovalDenialSummary | null {
+  return latestDenialsByTrace(ledger).get(traceId) ?? null;
+}
+
+function denialSummary(event: LedgerEvent): ApprovalDenialSummary | null {
+  const payload = event.payload;
+  if (
+    typeof payload.traceId !== "string" ||
+    typeof payload.actor !== "string" ||
+    typeof payload.deniedAt !== "string" ||
+    typeof payload.reason !== "string"
+  ) {
+    return null;
+  }
+  return {
+    traceId: payload.traceId,
+    actor: payload.actor,
+    deniedAt: payload.deniedAt,
+    reason: payload.reason,
+  };
+}
+
+function denialSummaryFromDenial(denial: ApprovalDenial): ApprovalDenialSummary {
+  return {
+    traceId: denial.traceId,
+    actor: denial.actor,
+    deniedAt: denial.deniedAt,
+    reason: denial.reason,
   };
 }
 

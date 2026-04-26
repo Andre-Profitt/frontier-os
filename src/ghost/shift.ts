@@ -85,7 +85,36 @@ export interface GraphRunRecord {
     | "awaitingApproval"
     | "peakConcurrency"
   >;
+  failure?: GraphFailureAnalysis | null;
   error?: string;
+}
+
+export type GraphFailureKind =
+  | "unknown_failed"
+  | "graph_runtime_exception"
+  | "runtime_exceeded"
+  | "verifier_failed"
+  | "dispatch_failed"
+  | "research_subprocess_unavailable"
+  | "research_decomposition_failed"
+  | "research_synthesis_failed"
+  | "research_dispatch_failed";
+
+export interface GraphFailureAnalysis {
+  kind: GraphFailureKind;
+  summary: string | null;
+  nodeId: string | null;
+  nodeKind: string | null;
+  attempts: number | null;
+  maxAttempts: number | null;
+  retryExhausted: boolean;
+  timedOut: boolean;
+  verifierRequired: boolean;
+  verifierPassed: boolean | null;
+  adapterId: string | null;
+  command: string | null;
+  quarantineRecommended: boolean;
+  quarantineReason: string | null;
 }
 
 const DEFAULT_QUEUE_DIR = resolve(homedir(), ".frontier", "ghost-shift");
@@ -336,6 +365,7 @@ async function processOne(
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    const failure = runtimeExceptionFailure(message);
     const moved = moveFile(runningPath, root.failed);
     ledger.appendEvent({
       sessionId: shiftId,
@@ -348,6 +378,7 @@ async function processOne(
         lane: meta.lane,
         projectId: meta.projectId,
         verb: meta.verb,
+        ...failurePayload(failure),
       },
     });
     return {
@@ -358,12 +389,17 @@ async function processOne(
       verb: meta.verb,
       status: "failed",
       durationMs: Date.now() - started,
+      failure,
       error: message,
     };
   }
 
   // Route based on run result.
-  const summary = writeRunSummary(graph, runResult, root.logs);
+  const failure =
+    runResult.status === "failed"
+      ? analyzeRunFailure(graph, runResult, options)
+      : null;
+  const summary = writeRunSummary(graph, runResult, root.logs, failure);
   let status: GraphRunRecord["status"];
   let destFile: string;
   if (runResult.status === "completed") {
@@ -421,6 +457,7 @@ async function processOne(
         lane: meta.lane,
         projectId: meta.projectId,
         verb: meta.verb,
+        ...failurePayload(failure),
       },
     });
   }
@@ -442,6 +479,7 @@ async function processOne(
       awaitingApproval: runResult.awaitingApproval,
       peakConcurrency: runResult.peakConcurrency,
     },
+    failure,
   };
 }
 
@@ -460,10 +498,276 @@ function graphEventMeta(graph: WorkGraph): {
       ? (graph.context.action as Record<string, unknown>)
       : null;
   const labels = Array.isArray(graph.labels) ? graph.labels : [];
+  const inferred = inferGraphMetaFromNodes(graph);
   return {
-    lane: stringFrom(action?.lane) ?? labelValue(labels, "lane"),
-    projectId: stringFrom(action?.projectId) ?? labelValue(labels, "project"),
-    verb: stringFrom(action?.verb) ?? labelValue(labels, "verb"),
+    lane:
+      stringFrom(action?.lane) ??
+      labelValue(labels, "lane") ??
+      inferred.lane,
+    projectId:
+      stringFrom(action?.projectId) ??
+      labelValue(labels, "project") ??
+      inferred.projectId,
+    verb:
+      stringFrom(action?.verb) ??
+      labelValue(labels, "verb") ??
+      inferred.verb,
+  };
+}
+
+function inferGraphMetaFromNodes(graph: WorkGraph): {
+  lane: string | null;
+  projectId: string | null;
+  verb: string | null;
+} {
+  let lane: string | null = null;
+  let projectId: string | null = null;
+  let verb: string | null = null;
+
+  for (const node of graph.nodes) {
+    const firstAllowedTool = node.allowedTools[0] ?? null;
+    if (!verb && firstAllowedTool) {
+      verb = firstAllowedTool;
+    }
+    if (!lane && verb) {
+      const [prefix] = verb.split(".", 1);
+      lane = prefix && prefix.length > 0 ? prefix : null;
+    }
+    for (const input of node.inputs) {
+      const value = record(input.value);
+      if (!value) continue;
+      if (!lane) {
+        lane = stringFrom(value.adapterId) ?? lane;
+      }
+      const command = stringFrom(value.command);
+      if (!verb && lane && command) {
+        verb = `${lane}.${command}`;
+      }
+      const argumentsRecord = record(value.arguments);
+      if (!projectId && argumentsRecord) {
+        projectId =
+          stringFrom(argumentsRecord.projectId) ??
+          stringFrom(argumentsRecord.project) ??
+          stringFrom(argumentsRecord.workspace) ??
+          null;
+      }
+    }
+  }
+
+  return { lane, projectId, verb };
+}
+
+function analyzeRunFailure(
+  graph: WorkGraph,
+  runResult: RunResult,
+  options: ShiftOptions,
+): GraphFailureAnalysis {
+  const failedNode = runResult.nodeResults.find((row) => row.status === "failed");
+  if (!failedNode) {
+    return {
+      kind: "unknown_failed",
+      summary: `graph ${graph.graphId} failed without a failed node record`,
+      nodeId: null,
+      nodeKind: null,
+      attempts: null,
+      maxAttempts: null,
+      retryExhausted: false,
+      timedOut: false,
+      verifierRequired: false,
+      verifierPassed: null,
+      adapterId: null,
+      command: null,
+      quarantineRecommended: false,
+      quarantineReason: null,
+    };
+  }
+
+  const dispatch = failedNode.dispatch;
+  const payload = record(dispatch?.payload);
+  const adapterId = stringFrom(payload?.adapterId);
+  const command = stringFrom(payload?.command);
+  const summary = nodeFailureSummary(failedNode);
+  const timedOut = dispatchTimedOut(dispatch);
+  const maxAttempts = resolveMaxAttempts(graph, failedNode.nodeId, options);
+  const retryExhausted =
+    dispatch?.status === "failed" &&
+    maxAttempts !== null &&
+    failedNode.attempts >= maxAttempts &&
+    maxAttempts > 1;
+
+  let kind: GraphFailureKind;
+  if (timedOut) {
+    kind = "runtime_exceeded";
+  } else if (dispatch?.status === "failed") {
+    kind = classifyDispatchFailure(failedNode, summary, adapterId, command);
+  } else if (failedNode.verifier.required && failedNode.verifier.passed === false) {
+    kind = "verifier_failed";
+  } else {
+    kind = "unknown_failed";
+  }
+
+  const quarantine = quarantineForFailure(kind);
+  return {
+    kind,
+    summary,
+    nodeId: failedNode.nodeId,
+    nodeKind: failedNode.kind,
+    attempts: failedNode.attempts,
+    maxAttempts,
+    retryExhausted,
+    timedOut,
+    verifierRequired: failedNode.verifier.required,
+    verifierPassed: failedNode.verifier.required
+      ? failedNode.verifier.passed
+      : null,
+    adapterId,
+    command,
+    quarantineRecommended: quarantine.recommended,
+    quarantineReason: quarantine.reason,
+  };
+}
+
+function runtimeExceptionFailure(message: string): GraphFailureAnalysis {
+  return {
+    kind: "graph_runtime_exception",
+    summary: message,
+    nodeId: null,
+    nodeKind: null,
+    attempts: null,
+    maxAttempts: null,
+    retryExhausted: false,
+    timedOut: false,
+    verifierRequired: false,
+    verifierPassed: null,
+    adapterId: null,
+    command: null,
+    quarantineRecommended: false,
+    quarantineReason: null,
+  };
+}
+
+function nodeFailureSummary(
+  failedNode: RunResult["nodeResults"][number],
+): string | null {
+  const dispatch = failedNode.dispatch;
+  const payload = record(dispatch?.payload);
+  return (
+    stringFrom(payload?.resultSummary) ??
+    stringFrom(dispatch?.summary) ??
+    stringFrom(failedNode.verifier.reason) ??
+    null
+  );
+}
+
+function classifyDispatchFailure(
+  failedNode: RunResult["nodeResults"][number],
+  summary: string | null,
+  adapterId: string | null,
+  command: string | null,
+): GraphFailureKind {
+  const isResearchNode =
+    adapterId === "research" || failedNode.kind === "research";
+  if (!isResearchNode) return "dispatch_failed";
+
+  const detail = `${summary ?? ""}\n${failedNode.dispatch?.summary ?? ""}`.toLowerCase();
+  if (
+    detail.includes("claude") &&
+    (detail.includes("needs an update") ||
+      detail.includes("could not start") ||
+      detail.includes("binary not found") ||
+      detail.includes("permission denied") ||
+      detail.includes("no stdin data received") ||
+      detail.includes("enoent"))
+  ) {
+    return "research_subprocess_unavailable";
+  }
+  if (
+    detail.includes("claude") &&
+    detail.includes("timed out")
+  ) {
+    return "research_subprocess_unavailable";
+  }
+  if (command === "monitor-topic" && detail.includes("decomposition failed")) {
+    return "research_decomposition_failed";
+  }
+  if (command === "monitor-topic" && detail.includes("synthesis failed")) {
+    return "research_synthesis_failed";
+  }
+  return "research_dispatch_failed";
+}
+
+function quarantineForFailure(kind: GraphFailureKind): {
+  recommended: boolean;
+  reason: string | null;
+} {
+  switch (kind) {
+    case "research_subprocess_unavailable":
+      return {
+        recommended: true,
+        reason:
+          "Claude subprocess lane is unhealthy; quarantine nightly research until the local Claude binary/auth/update issue is fixed.",
+      };
+    case "research_decomposition_failed":
+      return {
+        recommended: true,
+        reason:
+          "Research orchestration failed before worker fan-out; quarantine nightly research until a canary decomposition succeeds.",
+      };
+    case "research_synthesis_failed":
+      return {
+        recommended: true,
+        reason:
+          "Research synthesis failed after worker execution; quarantine nightly research until the synthesis lane is stable.",
+      };
+    default:
+      return { recommended: false, reason: null };
+  }
+}
+
+function resolveMaxAttempts(
+  graph: WorkGraph,
+  nodeId: string,
+  options: ShiftOptions,
+): number | null {
+  const node = graph.nodes.find((item) => item.nodeId === nodeId);
+  if (!node) return null;
+  if (node.kind === "approval") return 1;
+  if (node.retryPolicy?.maxAttempts !== undefined) {
+    return Math.max(1, node.retryPolicy.maxAttempts);
+  }
+  return Math.max(1, (options.maxRetries ?? 0) + 1);
+}
+
+function dispatchTimedOut(
+  dispatch: RunResult["nodeResults"][number]["dispatch"],
+): boolean {
+  if (!dispatch) return false;
+  const payload = record(dispatch.payload);
+  if (payload?.timedOut === true) return true;
+  const signal = stringFrom(payload?.signal);
+  if (signal === "SIGTERM" || signal === "SIGKILL") return true;
+  const detail = `${dispatch.summary}\n${stringFrom(payload?.resultSummary) ?? ""}`.toLowerCase();
+  return detail.includes("timeout");
+}
+
+function failurePayload(
+  failure: GraphFailureAnalysis | null,
+): Record<string, unknown> {
+  return {
+    failureKind: failure?.kind ?? null,
+    failureSummary: failure?.summary ?? null,
+    failureNodeId: failure?.nodeId ?? null,
+    failureNodeKind: failure?.nodeKind ?? null,
+    failureAttempts: failure?.attempts ?? null,
+    failureMaxAttempts: failure?.maxAttempts ?? null,
+    failureRetryExhausted: failure?.retryExhausted ?? false,
+    failureTimedOut: failure?.timedOut ?? false,
+    failureAdapterId: failure?.adapterId ?? null,
+    failureCommand: failure?.command ?? null,
+    failureVerifierRequired: failure?.verifierRequired ?? false,
+    failureVerifierPassed: failure?.verifierPassed ?? null,
+    quarantineRecommended: failure?.quarantineRecommended ?? false,
+    quarantineReason: failure?.quarantineReason ?? null,
   };
 }
 
@@ -538,12 +842,17 @@ function writeRunSummary(
   graph: WorkGraph,
   runResult: RunResult,
   logsDir: string,
+  failure: GraphFailureAnalysis | null,
 ): string {
   const path = resolve(logsDir, `${isoSlug()}-${graph.graphId}.json`);
   writeFileSync(
     path,
     JSON.stringify(
-      { graph: { graphId: graph.graphId, goal: graph.goal }, runResult },
+      {
+        graph: { graphId: graph.graphId, goal: graph.goal },
+        failure,
+        runResult,
+      },
       null,
       2,
     ),
@@ -579,6 +888,14 @@ function nowIso(): string {
 
 function stringFrom(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function record(
+  value: unknown,
+): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function labelValue(labels: string[], prefix: string): string | null {

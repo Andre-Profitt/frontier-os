@@ -59,7 +59,7 @@ case "$MIN_SEVERITY" in
   *)        echo "error: bad --min-severity: $MIN_SEVERITY" >&2; exit 64 ;;
 esac
 
-SINCE_ISO=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=$LOOKBACK_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+SINCE_ISO=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=$LOOKBACK_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 
 # Read alert events from the ledger as TSV. json_extract keeps us from
 # parsing JSON in bash. `PRAGMA query_only=1` blocks writes at the session

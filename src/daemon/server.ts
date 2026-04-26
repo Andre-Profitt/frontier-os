@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-import { approvalQueue, approvePendingTrace } from "../approvals/queue.ts";
+import {
+  approvalQueue,
+  approvePendingTrace,
+  denyPendingTrace,
+} from "../approvals/queue.ts";
 import { defaultQueueDir, queueStatus } from "../ghost/shift.ts";
 import { closeLedger, getLedger } from "../ledger/index.ts";
 import { newSessionId } from "../ledger/events.ts";
@@ -273,12 +277,19 @@ async function routeRequest(ctx: RouteContext): Promise<unknown> {
     }
     if (ctx.method === "POST") {
       const { CommandStore } = await import("../commands/store.ts");
+      const { dispatchCommandIfRunnable } = await import("../commands/dispatch.ts");
       const store = new CommandStore();
+      let command = null;
       try {
-        return { command: store.submit(commandInputFromRequest(ctx)) };
+        command = store.submit(commandInputFromRequest(ctx));
       } finally {
         store.close();
       }
+      void dispatchCommandIfRunnable({
+        commandId: command.commandId,
+        workerId: "frontierd",
+      });
+      return { command };
     }
     throw new HttpError(405, "/v1/commands requires GET or POST");
   }
@@ -406,10 +417,12 @@ async function routeRequest(ctx: RouteContext): Promise<unknown> {
   const commandResumeMatch = ctx.path.match(/^\/v1\/commands\/([^/]+)\/resume$/);
   if (commandResumeMatch) {
     const { CommandStore } = await import("../commands/store.ts");
+    const { dispatchCommandIfRunnable } = await import("../commands/dispatch.ts");
     const store = new CommandStore();
+    let command = null;
     try {
       const body = recordFromUnknown(ctx.body);
-      const command = store.resume({
+      command = store.resume({
         commandId: decodeURIComponent(commandResumeMatch[1]!),
         ...(typeof body.approval === "string"
           ? { approvalTraceId: body.approval }
@@ -419,10 +432,14 @@ async function routeRequest(ctx: RouteContext): Promise<unknown> {
           ? { resumePayload: body.resumePayload }
           : {}),
       });
-      return { command };
     } finally {
       store.close();
     }
+    void dispatchCommandIfRunnable({
+      commandId: command.commandId,
+      workerId: "frontierd",
+    });
+    return { command };
   }
   const commandCancelMatch = ctx.path.match(/^\/v1\/commands\/([^/]+)\/cancel$/);
   if (commandCancelMatch) {
@@ -546,10 +563,12 @@ async function routeRequest(ctx: RouteContext): Promise<unknown> {
     );
     const approval = approvePendingTrace(opts);
     const { CommandStore } = await import("../commands/store.ts");
+    const { dispatchCommandIfRunnable } = await import("../commands/dispatch.ts");
     const store = new CommandStore();
+    let resumedCommand = null;
     try {
       const command = store.getByTraceId(traceId);
-      const resumedCommand =
+      resumedCommand =
         autoResume !== false && command?.status === "blocked_approval"
           ? store.resume({
               commandId: command.commandId,
@@ -557,13 +576,34 @@ async function routeRequest(ctx: RouteContext): Promise<unknown> {
               actor,
             })
           : null;
-      return {
-        ...approval,
-        resumedCommand,
-      };
     } finally {
       store.close();
     }
+    if (resumedCommand !== null) {
+      void dispatchCommandIfRunnable({
+        commandId: resumedCommand.commandId,
+        workerId: "frontierd",
+      });
+    }
+    return {
+      ...approval,
+      resumedCommand,
+    };
+  }
+  if (ctx.path === "/v1/approvals/deny") {
+    const body = recordFromUnknown(ctx.body);
+    const traceId =
+      ctx.query.get("traceId") ?? stringFromUnknown(body.traceId) ?? "";
+    if (!traceId) throw new HttpError(400, "approval deny requires traceId");
+    const actor =
+      ctx.query.get("actor") ?? stringFromUnknown(body.actor) ?? "frontierd";
+    const reason =
+      ctx.query.get("reason") ?? stringFromUnknown(body.reason) ?? undefined;
+    return denyPendingTrace({
+      traceId,
+      actor,
+      ...(reason ? { reason } : {}),
+    });
   }
   if (ctx.path === "/v1/siri/status" || ctx.path === "/v1/client/status") {
     return await clientStatus();
@@ -609,6 +649,7 @@ function postOnlyPath(path: string): boolean {
   return (
     path === "/shutdown" ||
     path === "/v1/approvals/approve" ||
+    path === "/v1/approvals/deny" ||
     path === "/v1/command-worker/run-once" ||
     /^\/v1\/commands\/[^/]+\/(resume|cancel|retry|requeue)$/.test(path)
   );

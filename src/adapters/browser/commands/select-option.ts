@@ -10,6 +10,7 @@ interface SelectOptionArgs extends CdpAttachOptions {
   ariaLabel?: string;
   role?: string;
   query?: string;
+  commitKey?: string;
   optionLabel?: string;
   optionValue?: string;
   optionLoadTimeoutMs?: number;
@@ -44,12 +45,21 @@ interface SelectedOptionSummary {
   index: number;
 }
 
+interface KeyboardCommitPlanSummary {
+  navigationKey: "ArrowDown" | "ArrowUp";
+  navigationCount: number;
+  commitKey: "Enter";
+  targetValue: string;
+  targetLabel: string;
+}
+
 type QueryPlanMode = "none" | "trusted" | "page";
 
 interface QueryPlanSummary {
   mode: QueryPlanMode;
   text: string | null;
   opened?: boolean;
+  commitKey?: "Enter" | null;
 }
 
 interface PrepareSelectResult {
@@ -61,12 +71,18 @@ interface PrepareSelectResult {
 
 interface CompleteSelectResult {
   ok: true;
-  selected: SelectedOptionSummary;
+  selected?: SelectedOptionSummary;
+  keyboardPlan?: KeyboardCommitPlanSummary;
 }
 
 interface PrepareRestoreResult {
   ok: true;
   queryPlan: QueryPlanSummary;
+}
+
+interface RestoreSelectionResult {
+  ok: true;
+  keyboardPlan?: KeyboardCommitPlanSummary;
 }
 
 export async function selectOptionCommand(
@@ -106,7 +122,9 @@ export async function selectOptionCommand(
         });
         if (!prepared.ok) throw new Error(prepared.reason);
         await applyTrustedQueryPlan(session, prepared.queryPlan);
-        const restored = await evaluate<{ ok: true } | { ok: false; reason: string }>(
+        const restored = await evaluate<
+          RestoreSelectionResult | { ok: false; reason: string }
+        >(
           session,
           {
             expression: buildFinishRestoreSelectionScript(
@@ -119,6 +137,17 @@ export async function selectOptionCommand(
           },
         );
         if (!restored.ok) throw new Error(restored.reason);
+        if (restored.keyboardPlan) {
+          await applyKeyboardCommitPlan(session, restored.keyboardPlan);
+          const finalized = await evaluate<
+            RestoreSelectionResult | { ok: false; reason: string }
+          >(session, {
+            expression: buildFinalizeRestoreKeyboardCommitScript(selectToken),
+            awaitPromise: true,
+            returnByValue: true,
+          });
+          if (!finalized.ok) throw new Error(finalized.reason);
+        }
       },
       action: async () => {
         const prepared = await evaluate<
@@ -140,6 +169,25 @@ export async function selectOptionCommand(
           returnByValue: true,
         });
         if (!completed.ok) throw new Error(completed.reason);
+        if (completed.keyboardPlan) {
+          await applyKeyboardCommitPlan(session, completed.keyboardPlan);
+          const finalized = await evaluate<
+            CompleteSelectResult | { ok: false; reason: string }
+          >(session, {
+            expression: buildFinalizeKeyboardCommitScript(args, selectToken),
+            awaitPromise: true,
+            returnByValue: true,
+          });
+          if (!finalized.ok) throw new Error(finalized.reason);
+          if (!finalized.selected) {
+            throw new Error("keyboard commit did not return a finalized selection");
+          }
+          selectedOption = finalized.selected;
+          return;
+        }
+        if (!completed.selected) {
+          throw new Error("selection commit did not return a finalized selection");
+        }
         selectedOption = completed.selected;
       },
     });
@@ -208,6 +256,15 @@ function assertSelectOptionInputs(args: SelectOptionArgs): void {
       "select-option requires `arguments.optionLabel` or `arguments.optionValue`",
     );
   }
+  if (
+    typeof args.commitKey === "string" &&
+    args.commitKey.trim().length > 0 &&
+    args.commitKey.trim().toLowerCase() !== "enter"
+  ) {
+    throw new Error(
+      "select-option currently supports only `arguments.commitKey=\"Enter\"`",
+    );
+  }
 }
 
 async function applyTrustedQueryPlan(
@@ -216,6 +273,50 @@ async function applyTrustedQueryPlan(
 ): Promise<void> {
   if (queryPlan.mode !== "trusted" || typeof queryPlan.text !== "string") return;
   await session.client.Input.insertText({ text: queryPlan.text });
+}
+
+async function applyKeyboardCommitPlan(
+  session: CdpSession,
+  plan: KeyboardCommitPlanSummary,
+): Promise<void> {
+  for (let index = 0; index < plan.navigationCount; index += 1) {
+    await dispatchKey(session, plan.navigationKey);
+  }
+  await dispatchKey(session, plan.commitKey);
+}
+
+async function dispatchKey(
+  session: CdpSession,
+  key: "ArrowDown" | "ArrowUp" | "Enter",
+): Promise<void> {
+  const metadata = describeDispatchKey(key);
+  await session.client.Input.dispatchKeyEvent({
+    type: "rawKeyDown",
+    key: metadata.key,
+    code: metadata.code,
+    windowsVirtualKeyCode: metadata.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: metadata.windowsVirtualKeyCode,
+  });
+  await session.client.Input.dispatchKeyEvent({
+    type: "keyUp",
+    key: metadata.key,
+    code: metadata.code,
+    windowsVirtualKeyCode: metadata.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: metadata.windowsVirtualKeyCode,
+  });
+}
+
+function describeDispatchKey(
+  key: "ArrowDown" | "ArrowUp" | "Enter",
+): { key: string; code: string; windowsVirtualKeyCode: number } {
+  switch (key) {
+    case "ArrowDown":
+      return { key, code: "ArrowDown", windowsVirtualKeyCode: 40 };
+    case "ArrowUp":
+      return { key, code: "ArrowUp", windowsVirtualKeyCode: 38 };
+    case "Enter":
+      return { key, code: "Enter", windowsVirtualKeyCode: 13 };
+  }
 }
 
 function buildNetworkMatcher(args: SelectOptionArgs): NetworkMatcher | null {
@@ -257,6 +358,7 @@ function buildPrepareSelectScript(args: SelectOptionArgs, selectToken: string): 
     ariaLabel: args.ariaLabel ?? null,
     role: args.role ?? null,
     query: args.query ?? null,
+    commitKey: args.commitKey ?? null,
     optionLabel: args.optionLabel ?? null,
     optionValue: args.optionValue ?? null,
     optionLoadTimeoutMs: args.optionLoadTimeoutMs ?? null,
@@ -453,19 +555,19 @@ function buildPrepareSelectScript(args: SelectOptionArgs, selectToken: string): 
       }
       let value = option ? readOptionValue(option) : '';
       let label = option ? readOptionLabel(option) : '';
-      if (!value && 'value' in control && typeof control.value === 'string') value = control.value;
-      if (!label && 'value' in control && typeof control.value === 'string') {
-        label = normalize(control.value);
+      if (!value) {
+        value = normalize(
+          control.getAttribute && control.getAttribute('data-frontier-selected-value'),
+        );
       }
       if (!label) {
         label = normalize(
           control.getAttribute && control.getAttribute('data-frontier-selected-label'),
         );
       }
-      if (!value) {
-        value = normalize(
-          control.getAttribute && control.getAttribute('data-frontier-selected-value'),
-        );
+      if (!value && 'value' in control && typeof control.value === 'string') value = control.value;
+      if (!label && 'value' in control && typeof control.value === 'string') {
+        label = normalize(control.value);
       }
       return {
         id: option ? option.id || null : null,
@@ -597,7 +699,11 @@ function buildPrepareSelectScript(args: SelectOptionArgs, selectToken: string): 
       };
     }
     const previous = readSelectedOption(target);
-    let queryPlan = { mode: 'none', text: null };
+    let queryPlan = {
+      mode: 'none',
+      text: null,
+      commitKey: lower(payload.commitKey) === 'enter' ? 'Enter' : null,
+    };
     if (controlKind(target) === 'custom') {
       openCustomControl(target);
       if (queryText) {
@@ -605,6 +711,7 @@ function buildPrepareSelectScript(args: SelectOptionArgs, selectToken: string): 
         queryPlan = {
           mode: editor && focusEditableField(editor) ? 'trusted' : 'page',
           text: queryText,
+          commitKey: lower(payload.commitKey) === 'enter' ? 'Enter' : null,
         };
       }
     }
@@ -614,6 +721,7 @@ function buildPrepareSelectScript(args: SelectOptionArgs, selectToken: string): 
       target.setAttribute('data-frontier-previous-option-id', previous.id || '');
       target.setAttribute('data-frontier-previous-value', previous.value || '');
       target.setAttribute('data-frontier-previous-label', previous.label || '');
+      target.setAttribute('data-frontier-commit-key', queryPlan.commitKey || '');
       target.scrollIntoView({ block: 'center', inline: 'center' });
       if (queryPlan.mode !== 'trusted') {
         target.focus && target.focus();
@@ -653,6 +761,7 @@ function buildCompleteSelectScript(
     selectToken,
     queryMode,
     query: args.query ?? null,
+    commitKey: args.commitKey ?? null,
     optionLabel: args.optionLabel ?? null,
     optionValue: args.optionValue ?? null,
     optionLoadTimeoutMs: args.optionLoadTimeoutMs ?? null,
@@ -874,6 +983,36 @@ function buildCompleteSelectScript(
       }
       return null;
     };
+    const isSelectedOption = (option) =>
+      lower(option?.getAttribute && option.getAttribute('aria-selected')) === 'true' ||
+      lower(option?.getAttribute && option.getAttribute('data-selected')) === 'true';
+    const buildKeyboardPlan = (control, option) => {
+      if (controlKind(control) !== 'custom') return null;
+      if (lower(payload.commitKey) !== 'enter') return null;
+      const listbox = findListboxForControl(control, true);
+      const options = Array.from(
+        (listbox || control).querySelectorAll('[role="option"]'),
+      ).filter((candidate) => includeOption(candidate));
+      const targetIndex = options.indexOf(option);
+      if (targetIndex < 0) return null;
+      const activeId = normalize(control.getAttribute && control.getAttribute('aria-activedescendant'));
+      const activeOption = activeId ? document.getElementById(activeId) : null;
+      let activeIndex = options.indexOf(activeOption);
+      if (activeIndex < 0) {
+        activeIndex = options.findIndex((candidate) => isSelectedOption(candidate));
+      }
+      if (activeIndex < 0 && isSelectedOption(option)) {
+        activeIndex = targetIndex;
+      }
+      const delta = activeIndex >= 0 ? targetIndex - activeIndex : targetIndex + 1;
+      return {
+        navigationKey: delta < 0 ? 'ArrowUp' : 'ArrowDown',
+        navigationCount: Math.abs(delta),
+        commitKey: 'Enter',
+        targetValue: readOptionValue(option),
+        targetLabel: readOptionLabel(option),
+      };
+    };
     const selectCustomOption = (option) => {
       if (!option) return;
       try {
@@ -940,6 +1079,15 @@ function buildCompleteSelectScript(
         const index = Array.from(target.options).indexOf(option);
         target.selectedIndex = index;
         target.value = String(option.value ?? '');
+      } else if (payload.commitKey) {
+        const keyboardPlan = buildKeyboardPlan(target, option);
+        if (!keyboardPlan) {
+          return {
+            ok: false,
+            reason: 'keyboard commit plan could not be built for the matched option',
+          };
+        }
+        return { ok: true, keyboardPlan };
       } else {
         selectCustomOption(option);
       }
@@ -957,6 +1105,177 @@ function buildCompleteSelectScript(
         reason: 'selection commit failed: ' + ((error && error.message) || error),
       };
     }
+  })()`;
+}
+
+function buildFinalizeKeyboardCommitScript(
+  args: SelectOptionArgs,
+  selectToken: string,
+): string {
+  const payload = JSON.stringify({
+    selectToken,
+    optionLabel: args.optionLabel ?? null,
+    optionValue: args.optionValue ?? null,
+    optionLoadTimeoutMs: args.optionLoadTimeoutMs ?? null,
+  });
+  return `(async () => {
+    const payload = ${payload};
+    const normalize = (value) =>
+      String(value ?? '').replace(/\\s+/g, ' ').trim();
+    const lower = (value) => normalize(value).toLowerCase();
+    const implicitRole = (el) => {
+      if (!el) return '';
+      const explicit = lower(el.getAttribute && el.getAttribute('role'));
+      if (explicit) return explicit;
+      if (String(el.tagName || '').toLowerCase() === 'select') {
+        const size = Number(el.getAttribute && el.getAttribute('size') || 0);
+        return el.multiple || size > 1 ? 'listbox' : 'combobox';
+      }
+      if (lower(el.getAttribute && el.getAttribute('aria-haspopup')) === 'listbox') {
+        return 'combobox';
+      }
+      if (normalize(el.getAttribute && el.getAttribute('aria-controls'))) {
+        return 'combobox';
+      }
+      return '';
+    };
+    const controlKind = (el) =>
+      String(el && el.tagName || '').toLowerCase() === 'select' ? 'native' : 'custom';
+    const readOptionLabel = (option) =>
+      normalize(
+        (option && (
+          option.getAttribute && option.getAttribute('aria-label')
+        )) ||
+          option?.textContent ||
+          option?.label ||
+          '',
+      );
+    const readOptionValue = (option) => {
+      if (!option) return '';
+      const datasetValue =
+        option.dataset && typeof option.dataset.value === 'string'
+          ? option.dataset.value
+          : '';
+      if (datasetValue) return datasetValue;
+      const attrValue =
+        option.getAttribute && typeof option.getAttribute('value') === 'string'
+          ? option.getAttribute('value')
+          : '';
+      if (attrValue) return attrValue;
+      if ('value' in option && typeof option.value === 'string' && option.value) {
+        return option.value;
+      }
+      return readOptionLabel(option);
+    };
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const optionIndexFor = (option) => {
+      if (!option) return -1;
+      const listbox = option.closest && option.closest('[role="listbox"]');
+      if (!listbox) return -1;
+      return Array.from(listbox.querySelectorAll('[role="option"]')).indexOf(option);
+    };
+    const findListboxForControl = (control, includeHidden = false) => {
+      if (!control) return null;
+      const candidates = [];
+      const push = (value) => {
+        if (!value || candidates.includes(value)) return;
+        candidates.push(value);
+      };
+      if (implicitRole(control) === 'listbox') push(control);
+      const ids = [
+        normalize(control.getAttribute && control.getAttribute('aria-controls')),
+        normalize(control.getAttribute && control.getAttribute('aria-owns')),
+      ]
+        .filter(Boolean)
+        .flatMap((value) => value.split(/\\s+/).filter(Boolean));
+      for (const id of ids) push(document.getElementById(id));
+      const activeId = normalize(control.getAttribute && control.getAttribute('aria-activedescendant'));
+      if (activeId) {
+        const active = document.getElementById(activeId);
+        push(active && active.closest ? active.closest('[role="listbox"]') : null);
+      }
+      push(control.nextElementSibling);
+      if (control.parentElement) {
+        for (const listbox of control.parentElement.querySelectorAll('[role="listbox"]')) {
+          push(listbox);
+        }
+      }
+      if (candidates.length === 0) {
+        for (const listbox of document.querySelectorAll('[role="listbox"]')) push(listbox);
+      }
+      return (
+        candidates.find((candidate) =>
+          includeHidden ? Boolean(candidate) : isVisible(candidate),
+        ) || null
+      );
+    };
+    const readSelectedOption = (control) => {
+      if (!control) return { id: null, value: '', label: '', index: -1 };
+      if (controlKind(control) === 'native') {
+        const index = Number.isInteger(control.selectedIndex) ? control.selectedIndex : -1;
+        const option = index >= 0 ? control.options[index] : null;
+        return {
+          id: option ? option.id || null : null,
+          value: option ? String(option.value ?? '') : '',
+          label: option ? normalize(option.textContent || option.label || '') : '',
+          index,
+        };
+      }
+      const activeId = normalize(control.getAttribute && control.getAttribute('aria-activedescendant'));
+      let option = activeId ? document.getElementById(activeId) : null;
+      if (!option) {
+        const listbox = findListboxForControl(control, true);
+        if (listbox) {
+          option =
+            Array.from(listbox.querySelectorAll('[role="option"][aria-selected="true"]')).find(Boolean) ||
+            Array.from(listbox.querySelectorAll('[role="option"]')).find((candidate) =>
+              lower(candidate.getAttribute && candidate.getAttribute('data-selected')) === 'true',
+            ) ||
+            null;
+        }
+      }
+      return {
+        id: option ? option.id || null : null,
+        value: option ? readOptionValue(option) : normalize(control.getAttribute && control.getAttribute('data-frontier-selected-value')),
+        label: option ? readOptionLabel(option) : normalize(control.getAttribute && control.getAttribute('data-frontier-selected-label')),
+        index: option ? optionIndexFor(option) : -1,
+      };
+    };
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const target = document.querySelector(
+      '[data-frontier-select-token="' + payload.selectToken + '"]',
+    );
+    if (!target) {
+      return { ok: false, reason: 'selected target token not found after keyboard commit' };
+    }
+    const deadline = Date.now() + (
+      Number.isFinite(Number(payload.optionLoadTimeoutMs))
+        ? Math.max(250, Math.round(Number(payload.optionLoadTimeoutMs)))
+        : 3000
+    );
+    while (Date.now() <= deadline) {
+      const selected = readSelectedOption(target);
+      const valueMatches =
+        payload.optionValue === null || selected.value === String(payload.optionValue);
+      const labelMatches =
+        payload.optionLabel === null || lower(selected.label) === lower(payload.optionLabel);
+      if (valueMatches && labelMatches) {
+        target.setAttribute('data-frontier-selected-value', selected.value || '');
+        target.setAttribute('data-frontier-selected-label', selected.label || '');
+        return { ok: true, selected };
+      }
+      await wait(50);
+    }
+    return {
+      ok: false,
+      reason: 'keyboard commit did not settle on the expected option',
+    };
   })()`;
 }
 
@@ -1134,8 +1453,12 @@ function buildPrepareRestoreSelectionScript(
     if (!target) {
       return { ok: false, reason: 'selected target token not found' };
     }
+    const commitKey =
+      lower(target.getAttribute && target.getAttribute('data-frontier-commit-key')) === 'enter'
+        ? 'Enter'
+        : null;
     if (controlKind(target) === 'native') {
-      return { ok: true, queryPlan: { mode: 'none', text: null } };
+      return { ok: true, queryPlan: { mode: 'none', text: null, commitKey: null } };
     }
     const opened = implicitRole(target) !== 'listbox';
     if (opened) emitClick(target);
@@ -1143,11 +1466,11 @@ function buildPrepareRestoreSelectionScript(
     const previousValue = normalize(target.getAttribute && target.getAttribute('data-frontier-previous-value'));
     const previousLabel = normalize(target.getAttribute && target.getAttribute('data-frontier-previous-label'));
     if (findPreviousOption(target, previousId, previousValue, previousLabel)) {
-      return { ok: true, queryPlan: { mode: 'none', text: null, opened } };
+      return { ok: true, queryPlan: { mode: 'none', text: null, opened, commitKey } };
     }
     const queryText = previousLabel || previousValue || '';
     if (!queryText) {
-      return { ok: true, queryPlan: { mode: 'none', text: null, opened } };
+      return { ok: true, queryPlan: { mode: 'none', text: null, opened, commitKey } };
     }
     const editor = editableFieldForControl(target);
     return {
@@ -1156,6 +1479,7 @@ function buildPrepareRestoreSelectionScript(
         mode: editor && focusEditableField(editor) ? 'trusted' : 'page',
         text: queryText,
         opened,
+        commitKey,
       },
     };
   })()`;
@@ -1171,6 +1495,7 @@ function buildFinishRestoreSelectionScript(
     previousIndex,
     queryMode: queryPlan.mode,
     queryOpened: queryPlan.opened ?? false,
+    queryCommitKey: queryPlan.commitKey ?? null,
   });
   return `(async () => {
     const payload = ${payload};
@@ -1346,6 +1671,36 @@ function buildFinishRestoreSelectionScript(
       }
       return null;
     };
+    const isSelectedOption = (option) =>
+      lower(option?.getAttribute && option.getAttribute('aria-selected')) === 'true' ||
+      lower(option?.getAttribute && option.getAttribute('data-selected')) === 'true';
+    const buildKeyboardPlan = (control, option) => {
+      if (controlKind(control) !== 'custom') return null;
+      if (lower(payload.queryCommitKey) !== 'enter') return null;
+      const listbox = findListboxForControl(control, true);
+      const options = Array.from(
+        (listbox || control).querySelectorAll('[role="option"]'),
+      ).filter((candidate) => isVisible(candidate));
+      const targetIndex = options.indexOf(option);
+      if (targetIndex < 0) return null;
+      const activeId = normalize(control.getAttribute && control.getAttribute('aria-activedescendant'));
+      const activeOption = activeId ? document.getElementById(activeId) : null;
+      let activeIndex = options.indexOf(activeOption);
+      if (activeIndex < 0) {
+        activeIndex = options.findIndex((candidate) => isSelectedOption(candidate));
+      }
+      if (activeIndex < 0 && isSelectedOption(option)) {
+        activeIndex = targetIndex;
+      }
+      const delta = activeIndex >= 0 ? targetIndex - activeIndex : targetIndex + 1;
+      return {
+        navigationKey: delta < 0 ? 'ArrowUp' : 'ArrowDown',
+        navigationCount: Math.abs(delta),
+        commitKey: 'Enter',
+        targetValue: readOptionValue(option),
+        targetLabel: readOptionLabel(option),
+      };
+    };
     const readSelectedOption = (control) => {
       if (!control) return { value: '', label: '' };
       if (controlKind(control) === 'native') {
@@ -1404,6 +1759,16 @@ function buildFinishRestoreSelectionScript(
             reason: 'previous option not found during selection restore',
           };
         }
+        if (option && payload.queryCommitKey) {
+          const keyboardPlan = buildKeyboardPlan(target, option);
+          if (!keyboardPlan) {
+            return {
+              ok: false,
+              reason: 'keyboard restore plan could not be built for the previous option',
+            };
+          }
+          return { ok: true, keyboardPlan };
+        }
         if (option) emitClick(option);
       }
       const restored = readSelectedOption(target);
@@ -1420,6 +1785,165 @@ function buildFinishRestoreSelectionScript(
         reason: 'selection restore failed: ' + ((error && error.message) || error),
       };
     }
+  })()`;
+}
+
+function buildFinalizeRestoreKeyboardCommitScript(selectToken: string): string {
+  const payload = JSON.stringify({ selectToken });
+  return `(async () => {
+    const payload = ${payload};
+    const normalize = (value) =>
+      String(value ?? '').replace(/\\s+/g, ' ').trim();
+    const lower = (value) => normalize(value).toLowerCase();
+    const implicitRole = (el) => {
+      if (!el) return '';
+      const explicit = lower(el.getAttribute && el.getAttribute('role'));
+      if (explicit) return explicit;
+      if (String(el.tagName || '').toLowerCase() === 'select') {
+        const size = Number(el.getAttribute && el.getAttribute('size') || 0);
+        return el.multiple || size > 1 ? 'listbox' : 'combobox';
+      }
+      if (lower(el.getAttribute && el.getAttribute('aria-haspopup')) === 'listbox') {
+        return 'combobox';
+      }
+      if (normalize(el.getAttribute && el.getAttribute('aria-controls'))) {
+        return 'combobox';
+      }
+      return '';
+    };
+    const controlKind = (el) =>
+      String(el && el.tagName || '').toLowerCase() === 'select' ? 'native' : 'custom';
+    const readOptionLabel = (option) =>
+      normalize(
+        (option && (
+          option.getAttribute && option.getAttribute('aria-label')
+        )) ||
+          option?.textContent ||
+          option?.label ||
+          '',
+      );
+    const readOptionValue = (option) => {
+      if (!option) return '';
+      const datasetValue =
+        option.dataset && typeof option.dataset.value === 'string'
+          ? option.dataset.value
+          : '';
+      if (datasetValue) return datasetValue;
+      const attrValue =
+        option.getAttribute && typeof option.getAttribute('value') === 'string'
+          ? option.getAttribute('value')
+          : '';
+      if (attrValue) return attrValue;
+      if ('value' in option && typeof option.value === 'string' && option.value) {
+        return option.value;
+      }
+      return readOptionLabel(option);
+    };
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const optionIndexFor = (option) => {
+      if (!option) return -1;
+      const listbox = option.closest && option.closest('[role="listbox"]');
+      if (!listbox) return -1;
+      return Array.from(listbox.querySelectorAll('[role="option"]')).indexOf(option);
+    };
+    const findListboxForControl = (control, includeHidden = false) => {
+      if (!control) return null;
+      const candidates = [];
+      const push = (value) => {
+        if (!value || candidates.includes(value)) return;
+        candidates.push(value);
+      };
+      if (implicitRole(control) === 'listbox') push(control);
+      const ids = [
+        normalize(control.getAttribute && control.getAttribute('aria-controls')),
+        normalize(control.getAttribute && control.getAttribute('aria-owns')),
+      ]
+        .filter(Boolean)
+        .flatMap((value) => value.split(/\\s+/).filter(Boolean));
+      for (const id of ids) push(document.getElementById(id));
+      const activeId = normalize(control.getAttribute && control.getAttribute('aria-activedescendant'));
+      if (activeId) {
+        const active = document.getElementById(activeId);
+        push(active && active.closest ? active.closest('[role="listbox"]') : null);
+      }
+      push(control.nextElementSibling);
+      if (control.parentElement) {
+        for (const listbox of control.parentElement.querySelectorAll('[role="listbox"]')) {
+          push(listbox);
+        }
+      }
+      if (candidates.length === 0) {
+        for (const listbox of document.querySelectorAll('[role="listbox"]')) push(listbox);
+      }
+      return (
+        candidates.find((candidate) =>
+          includeHidden ? Boolean(candidate) : isVisible(candidate),
+        ) || null
+      );
+    };
+    const readSelectedOption = (control) => {
+      if (!control) return { id: null, value: '', label: '', index: -1 };
+      if (controlKind(control) === 'native') {
+        const index = Number.isInteger(control.selectedIndex) ? control.selectedIndex : -1;
+        const option = index >= 0 ? control.options[index] : null;
+        return {
+          id: option ? option.id || null : null,
+          value: option ? String(option.value ?? '') : '',
+          label: option ? normalize(option.textContent || option.label || '') : '',
+          index,
+        };
+      }
+      const activeId = normalize(control.getAttribute && control.getAttribute('aria-activedescendant'));
+      let option = activeId ? document.getElementById(activeId) : null;
+      if (!option) {
+        const listbox = findListboxForControl(control, true);
+        if (listbox) {
+          option =
+            Array.from(listbox.querySelectorAll('[role="option"][aria-selected="true"]')).find(Boolean) ||
+            Array.from(listbox.querySelectorAll('[role="option"]')).find((candidate) =>
+              lower(candidate.getAttribute && candidate.getAttribute('data-selected')) === 'true',
+            ) ||
+            null;
+        }
+      }
+      return {
+        id: option ? option.id || null : null,
+        value: option ? readOptionValue(option) : normalize(control.getAttribute && control.getAttribute('data-frontier-selected-value')),
+        label: option ? readOptionLabel(option) : normalize(control.getAttribute && control.getAttribute('data-frontier-selected-label')),
+        index: option ? optionIndexFor(option) : -1,
+      };
+    };
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const target = document.querySelector(
+      '[data-frontier-select-token="' + payload.selectToken + '"]',
+    );
+    if (!target) {
+      return { ok: false, reason: 'selected target token not found after keyboard restore' };
+    }
+    const previousValue = normalize(target.getAttribute && target.getAttribute('data-frontier-previous-value'));
+    const previousLabel = normalize(target.getAttribute && target.getAttribute('data-frontier-previous-label'));
+    const deadline = Date.now() + 3000;
+    while (Date.now() <= deadline) {
+      const restored = readSelectedOption(target);
+      const valueMatches = !previousValue || restored.value === previousValue;
+      const labelMatches = !previousLabel || lower(restored.label) === lower(previousLabel);
+      if (valueMatches && labelMatches) {
+        target.setAttribute('data-frontier-selected-value', restored.value || '');
+        target.setAttribute('data-frontier-selected-label', restored.label || '');
+        return { ok: true };
+      }
+      await wait(50);
+    }
+    return {
+      ok: false,
+      reason: 'keyboard restore did not settle on the previous option',
+    };
   })()`;
 }
 
@@ -1549,10 +2073,6 @@ function buildExpectationScript(
       }
       let value = option ? readOptionValue(option) : '';
       let label = option ? readOptionLabel(option) : '';
-      if (!value && 'value' in control && typeof control.value === 'string') value = control.value;
-      if (!label && 'value' in control && typeof control.value === 'string') {
-        label = normalize(control.value);
-      }
       if (!value) {
         value = normalize(
           control.getAttribute && control.getAttribute('data-frontier-selected-value'),
@@ -1562,6 +2082,10 @@ function buildExpectationScript(
         label = normalize(
           control.getAttribute && control.getAttribute('data-frontier-selected-label'),
         );
+      }
+      if (!value && 'value' in control && typeof control.value === 'string') value = control.value;
+      if (!label && 'value' in control && typeof control.value === 'string') {
+        label = normalize(control.value);
       }
       return { value, label };
     };
@@ -1655,6 +2179,7 @@ function requestedSelection(args: SelectOptionArgs): Record<string, unknown> {
     ariaLabel: args.ariaLabel ?? null,
     role: args.role ?? null,
     queryLength: typeof args.query === "string" ? args.query.length : null,
+    commitKey: args.commitKey ?? null,
     optionLabel: args.optionLabel ?? null,
     optionValue: args.optionValue ?? null,
     optionLoadTimeoutMs: args.optionLoadTimeoutMs ?? null,

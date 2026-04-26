@@ -22,7 +22,88 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WATCHLIST="$REPO_ROOT/examples/research/watchlist.json"
 TEMPLATE="$REPO_ROOT/examples/workgraphs/nightly-research.graph.json"
-QUEUE_DIR="$HOME/.frontier/ghost-shift/queue"
+QUEUE_DIR="${FRONTIER_NIGHTLY_RESEARCH_QUEUE_DIR:-$HOME/.frontier/ghost-shift/queue}"
+SKIP_PREFLIGHT="${FRONTIER_NIGHTLY_RESEARCH_SKIP_PREFLIGHT:-0}"
+CLAUDE_CANARY_TIMEOUT_SECONDS="${FRONTIER_CLAUDE_CANARY_TIMEOUT_SECONDS:-30}"
+
+resolve_claude_bin() {
+  local override="${FRONTIER_CLAUDE_BIN:-}"
+  if [[ -n "$override" ]]; then
+    printf '%s\n' "$override"
+    return
+  fi
+
+  local user_install="$HOME/.npm-global/bin/claude"
+  if [[ -x "$user_install" ]]; then
+    printf '%s\n' "$user_install"
+    return
+  fi
+
+  printf '%s\n' "claude"
+}
+
+run_claude_preflight() {
+  local claude_bin="$1"
+  python3 - "$claude_bin" "$CLAUDE_CANARY_TIMEOUT_SECONDS" <<'PY'
+import shutil
+import subprocess
+import sys
+
+claude_bin = sys.argv[1]
+timeout_seconds = float(sys.argv[2])
+resolved = shutil.which(claude_bin) if "/" not in claude_bin else claude_bin
+if not resolved:
+    print(
+        f"nightly-research preflight failed: Claude binary not found: {claude_bin}",
+        file=sys.stderr,
+    )
+    sys.exit(11)
+
+prompt = "Reply with READY only."
+try:
+    result = subprocess.run(
+        [resolved, "-p", prompt],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+    )
+except subprocess.TimeoutExpired:
+    print(
+        f"nightly-research preflight failed: Claude canary timed out after {timeout_seconds:.0f}s ({resolved})",
+        file=sys.stderr,
+    )
+    sys.exit(12)
+except OSError as exc:
+    print(
+        f"nightly-research preflight failed: Claude could not start ({resolved})",
+        file=sys.stderr,
+    )
+    print(str(exc), file=sys.stderr)
+    sys.exit(11)
+
+stdout = (result.stdout or "").strip()
+stderr = (result.stderr or "").strip()
+if result.returncode != 0:
+    detail = stderr or stdout or "(no output)"
+    print(
+        f"nightly-research preflight failed: Claude exited {result.returncode} ({resolved})",
+        file=sys.stderr,
+    )
+    print(detail[:400], file=sys.stderr)
+    sys.exit(result.returncode if result.returncode != 0 else 13)
+
+if "ready" not in stdout.lower():
+    print(
+        f"nightly-research preflight failed: Claude canary returned unexpected output ({resolved})",
+        file=sys.stderr,
+    )
+    print((stdout or "(empty stdout)")[:200], file=sys.stderr)
+    sys.exit(14)
+
+print(f"claude preflight ok: {resolved}")
+PY
+}
 
 if [[ ! -f "$WATCHLIST" ]]; then
   echo "watchlist not found: $WATCHLIST" >&2
@@ -32,8 +113,6 @@ if [[ ! -f "$TEMPLATE" ]]; then
   echo "nightly-research template not found: $TEMPLATE" >&2
   exit 2
 fi
-
-mkdir -p "$QUEUE_DIR"
 
 # Pick today's topic by day-of-week (Python handles both rotation + JSON).
 TOPIC="${1:-$(python3 - "$WATCHLIST" <<'PY'
@@ -63,6 +142,15 @@ if topic not in topics:
 print(topic)
 PY
 )}"
+
+CLAUDE_BIN="$(resolve_claude_bin)"
+if [[ "$SKIP_PREFLIGHT" == "1" ]]; then
+  echo "warning: skipping nightly-research Claude preflight" >&2
+else
+  run_claude_preflight "$CLAUDE_BIN" >&2
+fi
+
+mkdir -p "$QUEUE_DIR"
 
 TIMESTAMP="$(date -u +%Y%m%d%H%M%S)"
 DEST="$QUEUE_DIR/${TIMESTAMP}-nightly-research-${TOPIC}.graph.json"

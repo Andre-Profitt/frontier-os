@@ -1141,6 +1141,10 @@ async function cmdApprovalApprove(
     }
     const { approvePendingTrace } = await import("./approvals/queue.ts");
     const { CommandStore } = await import("./commands/store.ts");
+    const {
+      dispatchCommandIfRunnable,
+      dispatchedWorkerForCommand,
+    } = await import("./commands/dispatch.ts");
     const result = approvePendingTrace({ traceId, ttl, actor });
     const store = new CommandStore();
     let resumedCommand = null;
@@ -1157,12 +1161,70 @@ async function cmdApprovalApprove(
     } finally {
       store.close();
     }
+    const dispatched =
+      resumedCommand === null
+        ? null
+        : await dispatchCommandIfRunnable({
+            commandId: resumedCommand.commandId,
+            workerId: "local-cli",
+          });
     closeLedger();
-    out({ servedBy: "local", ...result, resumedCommand }, pretty);
+    out(
+      {
+        servedBy: "local",
+        ...result,
+        resumedCommand: dispatched?.command ?? resumedCommand,
+        ...(resumedCommand &&
+        dispatchedWorkerForCommand(resumedCommand.commandId, dispatched?.worker ?? null)
+          ? { worker: dispatched?.worker ?? null }
+          : {}),
+        ...(dispatched?.dispatchError ? { dispatchError: dispatched.dispatchError } : {}),
+      },
+      pretty,
+    );
   } catch (e) {
     closeLedger();
     return err({
       error: "approval approve failed",
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+async function cmdApprovalDeny(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const traceId = args.positional[0];
+  if (!traceId) return err({ error: "approval deny requires a trace id" });
+  const actor = typeof args.flags.actor === "string" ? args.flags.actor : "operator";
+  const reason =
+    typeof args.flags.reason === "string"
+      ? args.flags.reason
+      : "operator dismissed approval request";
+  try {
+    const daemonBody = await tryDaemonPost(
+      args,
+      `/v1/approvals/deny?traceId=${encodeURIComponent(traceId)}&actor=${encodeURIComponent(actor)}&reason=${encodeURIComponent(reason)}`,
+      { traceId, actor, reason },
+    );
+    if (daemonBody !== null) {
+      out({ servedBy: "frontierd", ...recordFromUnknown(daemonBody) }, pretty);
+      return;
+    }
+    const { denyPendingTrace } = await import("./approvals/queue.ts");
+    closeLedger();
+    out(
+      {
+        servedBy: "local",
+        ...denyPendingTrace({ traceId, actor, reason }),
+      },
+      pretty,
+    );
+  } catch (e) {
+    closeLedger();
+    return err({
+      error: "approval deny failed",
       message: e instanceof Error ? e.message : String(e),
     });
   }
@@ -1396,14 +1458,33 @@ async function cmdCommandSubmit(
       return;
     }
     const { CommandStore } = await import("./commands/store.ts");
+    const {
+      dispatchCommandIfRunnable,
+      dispatchedWorkerForCommand,
+    } = await import("./commands/dispatch.ts");
     const store = new CommandStore();
+    let command = null;
     try {
-      const command = store.submit(input);
-      closeLedger();
-      out({ servedBy: "local", command }, pretty);
+      command = store.submit(input);
     } finally {
       store.close();
     }
+    const dispatched = await dispatchCommandIfRunnable({
+      commandId: command.commandId,
+      workerId: "local-cli",
+    });
+    closeLedger();
+    out(
+      {
+        servedBy: "local",
+        command: dispatched.command ?? command,
+        ...(dispatchedWorkerForCommand(command.commandId, dispatched.worker)
+          ? { worker: dispatched.worker }
+          : {}),
+        ...(dispatched.dispatchError ? { dispatchError: dispatched.dispatchError } : {}),
+      },
+      pretty,
+    );
   } catch (e) {
     closeLedger();
     return err({
@@ -1913,7 +1994,12 @@ async function cmdCommandResume(
       return;
     }
     const { CommandStore } = await import("./commands/store.ts");
+    const {
+      dispatchCommandIfRunnable,
+      dispatchedWorkerForCommand,
+    } = await import("./commands/dispatch.ts");
     const store = new CommandStore();
+    let command = null;
     try {
       const opts: {
         commandId: string;
@@ -1926,12 +2012,26 @@ async function cmdCommandResume(
       if (recordFromUnknown(body.resumePayload) === body.resumePayload) {
         opts.resumePayload = body.resumePayload as Record<string, unknown>;
       }
-      const command = store.resume(opts);
-      closeLedger();
-      out({ servedBy: "local", command }, pretty);
+      command = store.resume(opts);
     } finally {
       store.close();
     }
+    const dispatched = await dispatchCommandIfRunnable({
+      commandId: command.commandId,
+      workerId: "local-cli",
+    });
+    closeLedger();
+    out(
+      {
+        servedBy: "local",
+        command: dispatched.command ?? command,
+        ...(dispatchedWorkerForCommand(command.commandId, dispatched.worker)
+          ? { worker: dispatched.worker }
+          : {}),
+        ...(dispatched.dispatchError ? { dispatchError: dispatched.dispatchError } : {}),
+      },
+      pretty,
+    );
   } catch (e) {
     closeLedger();
     return err({
@@ -3418,6 +3518,7 @@ async function main(): Promise<void> {
           approval: [
             "list [--limit N] [--include-resolved]",
             "approve <traceId> [--ttl 15m] [--actor name]",
+            "deny <traceId> [--actor name] [--reason text]",
           ],
           mcp: [
             "list",
@@ -3695,6 +3796,8 @@ async function main(): Promise<void> {
         return cmdApprovalList(args, pretty);
       case "approve":
         return cmdApprovalApprove(args, pretty);
+      case "deny":
+        return cmdApprovalDeny(args, pretty);
       default:
         return err({
           error: `unknown approval subcommand: ${args.subcommand ?? "(none)"}`,

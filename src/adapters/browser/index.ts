@@ -16,10 +16,13 @@ import { captureScreenshotCommand } from "./commands/capture-screenshot.ts";
 import { runScriptCommand } from "./commands/run-script.ts";
 import { inspectDomCommand } from "./commands/inspect-dom.ts";
 import { clickElementCommand } from "./commands/click-element.ts";
+import { extractCommand } from "./commands/extract.ts";
 import { inspectNetworkCommand } from "./commands/inspect-network.ts";
 import { enterTextCommand } from "./commands/enter-text.ts";
 import { navigateCommand } from "./commands/navigate.ts";
+import { pressKeyCommand } from "./commands/press-key.ts";
 import { selectOptionCommand } from "./commands/select-option.ts";
+import { validateCommand } from "./commands/validate.ts";
 
 type CommandHandler = (invocation: AdapterInvocation) => Promise<AdapterResult>;
 
@@ -29,9 +32,12 @@ const HANDLERS: Record<string, CommandHandler> = {
   "capture-screenshot": captureScreenshotCommand,
   "run-script": runScriptCommand,
   "inspect-dom": inspectDomCommand,
+  extract: extractCommand,
   "inspect-network": inspectNetworkCommand,
+  validate: validateCommand,
   "click-element": clickElementCommand,
   "enter-text": enterTextCommand,
+  "press-key": pressKeyCommand,
   "select-option": selectOptionCommand,
   navigate: navigateCommand,
 };

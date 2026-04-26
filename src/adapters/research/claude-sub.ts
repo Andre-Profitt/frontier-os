@@ -8,6 +8,9 @@
 // is exactly what the orchestrator-worker pattern needs.
 
 import { execa } from "execa";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface ClaudeCallOptions {
   prompt: string;
@@ -28,7 +31,23 @@ export interface ClaudeCallResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 240_000; // 4 minutes per call — research can take a while
-const CLAUDE_BIN = process.env.FRONTIER_CLAUDE_BIN ?? "claude";
+
+function resolveClaudeBin(): string {
+  const override = process.env.FRONTIER_CLAUDE_BIN?.trim();
+  if (override) return override;
+
+  const userInstall = join(
+    homedir(),
+    ".npm-global",
+    "bin",
+    "claude",
+  );
+  if (existsSync(userInstall)) return userInstall;
+
+  return "claude";
+}
+
+const CLAUDE_BIN = resolveClaudeBin();
 
 /**
  * Invoke `claude -p "<prompt>"` and capture stdout as the response.

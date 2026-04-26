@@ -200,6 +200,14 @@ export interface CommandOperatorResult {
 }
 
 const CURRENT_SCHEMA_VERSION = 1;
+const NEXUS_DIR = resolve(homedir(), "Desktop", "nexus");
+const NEXUS_SRC_DIR = resolve(NEXUS_DIR, "src");
+const NEXUS_NATIVE_CONTROL_SCRIPT = resolve(
+  homedir(),
+  "frontier-os",
+  "scripts",
+  "nexus_native_control.py",
+);
 
 const SCHEMA_DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -1160,6 +1168,12 @@ function classifyCommand(envelope: CommandEnvelope): CommandRoute {
           : "mlx.status";
     return route("mlx", verb, projectId ?? "mlx-workbench", explicit);
   }
+  const nativePayloadRoute = nativeRouteFromPayload(
+    envelope.payload,
+    projectId,
+    explicit,
+  );
+  if (nativePayloadRoute) return nativePayloadRoute;
   const browserPayloadRoute = browserRouteFromPayload(
     envelope.payload,
     projectId,
@@ -1269,6 +1283,8 @@ function inferredClassForVerb(verb: string): {
       "overnight.brief",
       "mlx.status",
       "browser.inspect",
+      "browser.extract",
+      "browser.validate",
       "browser.inspect_dom",
       "browser.inspect_network",
       "browser.capture_screenshot",
@@ -1297,6 +1313,7 @@ function inferredClassForVerb(verb: string): {
       "salesforce.save_dashboard",
       "browser.click_element",
       "browser.enter_text",
+      "browser.press_key",
       "browser.select_option",
       "browser.navigate",
       "command.intent",
@@ -1305,7 +1322,9 @@ function inferredClassForVerb(verb: string): {
   ) {
     return { approvalClass: 1 };
   }
-  if (verb === "ops.repair_launchagent") return { approvalClass: 2 };
+  if (["ops.repair_launchagent", "ops.native_type_text"].includes(verb)) {
+    return { approvalClass: 2 };
+  }
   if (
     ["filesystem.delete", "database.drop", "service.restart"].includes(verb)
   ) {
@@ -1360,7 +1379,7 @@ function isProtectedServiceRestartIntent(intent: string): boolean {
 
 function planCommand(envelope: CommandEnvelope, routeInfo: CommandRoute): CommandPlan {
   const artifactDir = defaultCommandArtifactDir(envelope.commandId);
-  const action = directActionFor(routeInfo, envelope.payload);
+  const action = directActionFor(routeInfo, envelope.payload, artifactDir);
   return {
     planId: `plan_${envelope.commandId}`,
     type: action ? "direct_action" : "blocked",
@@ -1391,6 +1410,7 @@ function planCommand(envelope: CommandEnvelope, routeInfo: CommandRoute): Comman
 function directActionFor(
   routeInfo: CommandRoute,
   payload: Record<string, unknown>,
+  artifactDir: string,
 ): CommandPlan["action"] {
   const projectId = routeInfo.projectId;
   if (routeInfo.verb === "project.status") {
@@ -1493,6 +1513,14 @@ function directActionFor(
   if (routeInfo.verb === "browser.inspect") {
     return browserAdapterAction("current-tab", "read", payload, true);
   }
+  if (routeInfo.verb === "browser.extract") {
+    if (!browserExtractReady(payload)) return null;
+    return browserAdapterAction("extract", "read", payload, true);
+  }
+  if (routeInfo.verb === "browser.validate") {
+    if (!browserValidateReady(payload)) return null;
+    return browserAdapterAction("validate", "read", payload, true);
+  }
   if (routeInfo.verb === "browser.inspect_dom") {
     return browserAdapterAction("inspect-dom", "read", payload, true);
   }
@@ -1509,6 +1537,10 @@ function directActionFor(
   if (routeInfo.verb === "browser.enter_text") {
     if (!browserEnterTextReady(payload)) return null;
     return browserAdapterAction("enter-text", "apply", payload, false);
+  }
+  if (routeInfo.verb === "browser.press_key") {
+    if (!browserPressKeyReady(payload)) return null;
+    return browserAdapterAction("press-key", "apply", payload, false);
   }
   if (routeInfo.verb === "browser.select_option") {
     if (!browserSelectOptionReady(payload)) return null;
@@ -1558,7 +1590,77 @@ function directActionFor(
       dryRunSafe: false,
     };
   }
+  if (routeInfo.verb === "ops.native_type_text") {
+    if (!nativeTypeTextReady(payload)) return null;
+    return nativeTypeTextAction(payload, artifactDir);
+  }
   return null;
+}
+
+function nativeTypeTextAction(
+  payload: Record<string, unknown>,
+  artifactDir: string,
+): CommandPlan["action"] {
+  const text = nativeTextFromPayload(payload);
+  if (!text) return null;
+  const targetAppName = nativeTargetAppNameFromPayload(payload);
+  const targetBundleId = nativeTargetBundleIdFromPayload(payload);
+  const args = [
+    "--directory",
+    NEXUS_DIR,
+    "run",
+    "env",
+    `PYTHONPATH=${NEXUS_SRC_DIR}`,
+    "python",
+    NEXUS_NATIVE_CONTROL_SCRIPT,
+    "type-text",
+    "--text",
+    text,
+    "--artifact-dir",
+    artifactDir,
+  ];
+  if (targetAppName) {
+    args.push("--target-app-name", targetAppName);
+  }
+  if (targetBundleId) {
+    args.push("--target-bundle-id", targetBundleId);
+  }
+  if (nativeCaptureAfterFromPayload(payload)) {
+    args.push("--capture-after");
+  }
+  return terminalRunCommandAction({
+    command: "uv",
+    args,
+    cwd: NEXUS_DIR,
+    timeoutMs: 45_000,
+  });
+}
+
+function terminalRunCommandAction(input: {
+  command: string;
+  args: string[];
+  cwd?: string;
+  timeoutMs?: number;
+}): CommandPlan["action"] {
+  const adapterInput: Record<string, unknown> = {
+    command: input.command,
+    args: input.args,
+  };
+  if (input.cwd) adapterInput.cwd = input.cwd;
+  if (typeof input.timeoutMs === "number") adapterInput.timeoutMs = input.timeoutMs;
+  return {
+    family: "adapter",
+    subcommand: "invoke",
+    args: [
+      "terminal",
+      "run-command",
+      "--mode",
+      "apply",
+      "--input",
+      JSON.stringify(adapterInput),
+    ],
+    dryRunSafe: false,
+  };
 }
 
 function salesforceAdapterAction(
@@ -1649,6 +1751,12 @@ function browserRouteFromPayload(
   if (command === "current-tab") {
     return route("browser", "browser.inspect", projectId, explicitClass);
   }
+  if (command === "extract") {
+    return browserExtractRoute(payload, projectId, explicitClass);
+  }
+  if (command === "validate") {
+    return browserValidateRoute(payload, projectId, explicitClass);
+  }
   if (command === "inspect-dom") {
     return route("browser", "browser.inspect_dom", projectId, explicitClass);
   }
@@ -1663,6 +1771,9 @@ function browserRouteFromPayload(
   }
   if (command === "enter-text") {
     return browserEnterTextRoute(payload, projectId, explicitClass);
+  }
+  if (command === "press-key") {
+    return browserPressKeyRoute(payload, projectId, explicitClass);
   }
   if (command === "select-option") {
     return browserSelectOptionRoute(payload, projectId, explicitClass);
@@ -1686,6 +1797,28 @@ function browserClickRoute(
   };
 }
 
+function browserExtractRoute(
+  payload: Record<string, unknown>,
+  projectId: string | null,
+  explicitClass: ApprovalClass | null,
+): CommandRoute {
+  return {
+    ...route("browser", "browser.extract", projectId, explicitClass),
+    missingInputs: browserExtractMissingInputs(payload),
+  };
+}
+
+function browserValidateRoute(
+  payload: Record<string, unknown>,
+  projectId: string | null,
+  explicitClass: ApprovalClass | null,
+): CommandRoute {
+  return {
+    ...route("browser", "browser.validate", projectId, explicitClass),
+    missingInputs: browserValidateMissingInputs(payload),
+  };
+}
+
 function browserEnterTextRoute(
   payload: Record<string, unknown>,
   projectId: string | null,
@@ -1705,6 +1838,17 @@ function browserNavigateRoute(
   return {
     ...route("browser", "browser.navigate", projectId, explicitClass),
     missingInputs: browserNavigateMissingInputs(payload),
+  };
+}
+
+function browserPressKeyRoute(
+  payload: Record<string, unknown>,
+  projectId: string | null,
+  explicitClass: ApprovalClass | null,
+): CommandRoute {
+  return {
+    ...route("browser", "browser.press_key", projectId, explicitClass),
+    missingInputs: browserPressKeyMissingInputs(payload),
   };
 }
 
@@ -1752,6 +1896,68 @@ function salesforceSetFilterRoute(
   };
 }
 
+function nativeRouteFromPayload(
+  payload: Record<string, unknown>,
+  projectId: string | null,
+  explicitClass: ApprovalClass | null,
+): CommandRoute | null {
+  const action = nativeActionFromPayload(payload);
+  if (action === "type_text") {
+    return {
+      ...route("ops", "ops.native_type_text", projectId ?? "frontier-os", explicitClass),
+      missingInputs: nativeTypeTextMissingInputs(payload),
+    };
+  }
+  return null;
+}
+
+function nativeActionFromPayload(payload: Record<string, unknown>): string | null {
+  const value = payload.nativeAction;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function nativeTypeTextMissingInputs(payload: Record<string, unknown>): string[] {
+  const text = nativeTextFromPayload(payload);
+  return text ? [] : ["text"];
+}
+
+function nativeTypeTextReady(payload: Record<string, unknown>): boolean {
+  return nativeTypeTextMissingInputs(payload).length === 0;
+}
+
+function nativeTextFromPayload(payload: Record<string, unknown>): string | null {
+  const value = payload.text;
+  if (typeof value !== "string") return null;
+  return value.trim().length > 0 ? value : null;
+}
+
+function nativeCaptureAfterFromPayload(
+  payload: Record<string, unknown>,
+): boolean {
+  const value = payload.captureAfter;
+  return typeof value === "boolean" ? value : true;
+}
+
+function nativeTargetAppNameFromPayload(
+  payload: Record<string, unknown>,
+): string | null {
+  const value = payload.targetAppName;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function nativeTargetBundleIdFromPayload(
+  payload: Record<string, unknown>,
+): string | null {
+  const value = payload.targetBundleId;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function adapterCommandFromPayload(payload: Record<string, unknown>): string | null {
   const value = payload.adapterCommand;
   if (typeof value !== "string") return null;
@@ -1773,6 +1979,43 @@ function browserClickLocatorPresent(payload: Record<string, unknown>): boolean {
     typeof args.text === "string" ||
     typeof args.ariaLabel === "string"
   );
+}
+
+function browserExtractMissingInputs(
+  payload: Record<string, unknown>,
+): string[] {
+  const args = adapterArgumentsFromPayload(payload);
+  if (!isRecord(args.fields) || Object.keys(args.fields).length === 0) {
+    return ["adapterArguments.fields"];
+  }
+  return [];
+}
+
+function browserExtractReady(payload: Record<string, unknown>): boolean {
+  return browserExtractMissingInputs(payload).length === 0;
+}
+
+function browserValidateMissingInputs(
+  payload: Record<string, unknown>,
+): string[] {
+  const args = adapterArgumentsFromPayload(payload);
+  const missing: string[] = [];
+  if (!isRecord(args.fields) || Object.keys(args.fields).length === 0) {
+    missing.push("adapterArguments.fields");
+  }
+  const hasExpected = isRecord(args.expected) && Object.keys(args.expected).length > 0;
+  const hasAllOf = Array.isArray(args.allOf) && args.allOf.length > 0;
+  const hasAnyOf = Array.isArray(args.anyOf) && args.anyOf.length > 0;
+  const hasNot = Array.isArray(args.not) && args.not.length > 0;
+  const hasSchema = Object.prototype.hasOwnProperty.call(args, "schema");
+  if (!hasExpected && !hasAllOf && !hasAnyOf && !hasNot && !hasSchema) {
+    missing.push("adapterArguments.expected|allOf|anyOf|not|schema");
+  }
+  return missing;
+}
+
+function browserValidateReady(payload: Record<string, unknown>): boolean {
+  return browserValidateMissingInputs(payload).length === 0;
 }
 
 function browserEnterTextMissingInputs(
@@ -1810,6 +2053,28 @@ function browserNavigateMissingInputs(
 
 function browserNavigateReady(payload: Record<string, unknown>): boolean {
   return browserNavigateMissingInputs(payload).length === 0;
+}
+
+function browserPressKeyMissingInputs(
+  payload: Record<string, unknown>,
+): string[] {
+  const args = adapterArgumentsFromPayload(payload);
+  const missing: string[] = [];
+  if (
+    typeof args.selector !== "string" &&
+    typeof args.text !== "string" &&
+    typeof args.ariaLabel !== "string"
+  ) {
+    missing.push("adapterArguments.selector|text|ariaLabel");
+  }
+  if (typeof args.key !== "string" || args.key.trim().length === 0) {
+    missing.push("adapterArguments.key");
+  }
+  return missing;
+}
+
+function browserPressKeyReady(payload: Record<string, unknown>): boolean {
+  return browserPressKeyMissingInputs(payload).length === 0;
 }
 
 function browserSelectOptionMissingInputs(

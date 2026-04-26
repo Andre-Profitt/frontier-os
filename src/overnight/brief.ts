@@ -17,6 +17,7 @@ export interface OvernightBriefResult {
   sinceIso: string;
   untilIso: string;
   counts: Record<string, number>;
+  failureKinds: Record<string, number>;
   latestRuns: OvernightRunBriefItem[];
   ghostShifts: OvernightGhostShiftBriefItem[];
   manualAttention: OvernightManualAttentionItem[];
@@ -33,6 +34,7 @@ export interface OvernightBriefResult {
     automatedDebtActions: number;
     commandDebtAttentionCount: number;
     attentionCount: number;
+    quarantineCount: number;
   };
 }
 
@@ -73,6 +75,9 @@ export interface OvernightManualAttentionItem {
   projectId: string | null;
   verb: string | null;
   reason: string | null;
+  failureKind: string | null;
+  quarantineRecommended: boolean;
+  quarantineReason: string | null;
   payload: Record<string, unknown>;
 }
 
@@ -200,6 +205,10 @@ export function overnightBrief(
   const manualAttention = [...ghostAttention, ...debtAttention]
     .sort((a, b) => b.ts.localeCompare(a.ts))
     .slice(0, 25);
+  const failureKinds = countFailureKinds(ghostAttention);
+  const quarantineCount = ghostAttention.filter(
+    (item) => item.quarantineRecommended,
+  ).length;
 
   const completedGraphs = counts["ghost.graph_completed"] ?? 0;
   const failedGraphs = counts["ghost.graph_failed"] ?? 0;
@@ -228,6 +237,7 @@ export function overnightBrief(
     sinceIso,
     untilIso,
     counts,
+    failureKinds,
     latestRuns,
     ghostShifts,
     manualAttention,
@@ -244,6 +254,7 @@ export function overnightBrief(
       automatedDebtActions,
       commandDebtAttentionCount,
       attentionCount,
+      quarantineCount,
     },
   };
   appendBriefEvent(result);
@@ -299,6 +310,9 @@ function attentionSummary(event: LedgerEvent): OvernightManualAttentionItem {
     projectId: meta.projectId,
     verb: meta.verb,
     reason: reasonFromPayload(payload),
+    failureKind: stringOrNull(payload.failureKind),
+    quarantineRecommended: payload.quarantineRecommended === true,
+    quarantineReason: stringOrNull(payload.quarantineReason),
     payload,
   };
 }
@@ -323,6 +337,9 @@ function debtAttentionSummary(event: LedgerEvent): OvernightManualAttentionItem[
         stringOrNull(action.reason) ??
         stringOrNull(action.debtSummary) ??
         stringOrNull(action.action),
+      failureKind: null,
+      quarantineRecommended: false,
+      quarantineReason: null,
       payload: {
         runId,
         ...action,
@@ -1099,8 +1116,10 @@ function laneStatus(item: {
 }
 
 function reasonFromPayload(payload: Record<string, unknown>): string | null {
+  if (typeof payload.failureSummary === "string") return payload.failureSummary;
   if (typeof payload.reason === "string") return payload.reason;
   if (typeof payload.error === "string") return payload.error;
+  if (typeof payload.quarantineReason === "string") return payload.quarantineReason;
   if (Array.isArray(payload.rejections) && payload.rejections.length > 0) {
     const first = payload.rejections[0];
     if (first && typeof first === "object") {
@@ -1109,6 +1128,17 @@ function reasonFromPayload(payload: Record<string, unknown>): string | null {
     }
   }
   return null;
+}
+
+function countFailureKinds(
+  items: OvernightManualAttentionItem[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    if (!item.failureKind) continue;
+    counts[item.failureKind] = (counts[item.failureKind] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function appendBriefEvent(result: OvernightBriefResult): void {

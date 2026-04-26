@@ -66,6 +66,30 @@
       "undoSupported": false
     },
     {
+      "command": "extract",
+      "summary": "Extract structured page data through selector-based fields with optional schema validation.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
+      "command": "validate",
+      "summary": "Validate extracted page data against exact, approximate, coerced, field-referenced, count, sum, avg, min, max, median, p90, p95, element-wise, positional, relative-position, adjacency-aware, gap-aware, offset-aware, window-aware, set-level, multiset, cardinality, sequence-aware, grouped, or nested boolean expectations and optional JSON schema.",
+      "supportedModes": [
+        "read"
+      ],
+      "sideEffectClass": "none",
+      "verifierHints": [
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
       "command": "run-script",
       "summary": "Execute a bounded in-page script and return structured output.",
       "supportedModes": [
@@ -107,8 +131,21 @@
       "undoSupported": false
     },
     {
+      "command": "press-key",
+      "summary": "Perform a verified keyboard action against a focused page element.",
+      "supportedModes": [
+        "apply"
+      ],
+      "sideEffectClass": "shared_write",
+      "verifierHints": [
+        "policy",
+        "trace_grade"
+      ],
+      "undoSupported": false
+    },
+    {
       "command": "select-option",
-      "summary": "Perform verified option selection on a native select or custom combobox/listbox control.",
+      "summary": "Perform verified option selection on a native select or custom combobox/listbox control, including optional keyboard Enter commit for custom pickers.",
       "supportedModes": [
         "apply"
       ],

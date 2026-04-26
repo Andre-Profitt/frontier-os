@@ -43,6 +43,13 @@ export interface ApprovalGrant {
   ttlSeconds: number;
 }
 
+export interface ApprovalDenial {
+  traceId: string;
+  actor: string;
+  deniedAt: string;
+  reason: string;
+}
+
 export interface ApprovalConsumption {
   tokenId: string;
   traceId: string;
@@ -285,6 +292,25 @@ export function approveTrace(input: {
     grant as unknown as Record<string, unknown>,
   );
   return grant;
+}
+
+export function denyTrace(input: {
+  traceId: string;
+  actor?: string;
+  reason?: string;
+}): ApprovalDenial {
+  const denial: ApprovalDenial = {
+    traceId: input.traceId,
+    actor: input.actor ?? "operator",
+    deniedAt: new Date().toISOString(),
+    reason: input.reason ?? "operator dismissed approval request",
+  };
+  appendPolicyEvent(
+    "policy.approval_denied",
+    input.traceId,
+    denial as unknown as Record<string, unknown>,
+  );
+  return denial;
 }
 
 export function consumeApprovalToken(
