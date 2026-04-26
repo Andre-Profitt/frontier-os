@@ -114,8 +114,20 @@ export interface ContextPack {
 
 // --- helpers ---------------------------------------------------------------
 
+// Defensive timeout for read-only local subprocess calls (git metadata
+// reads, sqlite3 query_only reads, find fingerprints). Local-file
+// operations should complete in milliseconds; 5s is well past the worst
+// realistic case and prevents an unrelated hang from blocking the pack
+// generator. The factory verifier subprocesses (which actually run work)
+// have their own larger timeouts in factories/<lane>/run.ts.
+const READONLY_SUBPROCESS_TIMEOUT_MS = 5_000;
+
 function git(args: string[], cwd: string): string {
-  const res = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const res = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: READONLY_SUBPROCESS_TIMEOUT_MS,
+  });
   if (res.status !== 0) {
     return "";
   }
@@ -318,6 +330,7 @@ function readRecentAlertsForLane(
   ].join("\n");
   const res = spawnSync("sqlite3", ["-separator", "\t", ledgerDb, sql], {
     encoding: "utf8",
+    timeout: READONLY_SUBPROCESS_TIMEOUT_MS,
   });
   if (res.status !== 0) return null;
   const out = res.stdout ?? "";

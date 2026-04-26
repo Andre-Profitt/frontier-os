@@ -44,6 +44,14 @@ const REPO_ROOT = resolve(HERE, "..", "..");
 const SUITE_PATH = resolve(HERE, "local-smoke-factory-quality.json");
 const LANE = "ai-stack-local-smoke";
 
+// Defensive timeout for read-only local subprocess calls (sqlite3 reads,
+// fixture seeds, find fingerprint). Local-file operations should complete
+// in milliseconds; 5s is well past the worst realistic case and prevents
+// an unrelated hang from blocking eval runs. The factory verifier
+// subprocesses (which actually run work) have their own larger timeouts
+// inside factories/<lane>/run.ts.
+const READONLY_SUBPROCESS_TIMEOUT_MS = 5_000;
+
 export type CriterionStatus = "passed" | "failed" | "not_applicable";
 
 export interface CriterionResult {
@@ -155,6 +163,7 @@ function seedFixtureLedger(
     .join("\n");
   const res = spawnSync("sqlite3", [dbPath, ddl + inserts], {
     encoding: "utf8",
+    timeout: READONLY_SUBPROCESS_TIMEOUT_MS,
   });
   if (res.status !== 0) {
     throw new Error(`failed to seed fixture ledger: ${res.stderr}`);
@@ -172,7 +181,7 @@ function findFingerprint(root: string): string {
       "f",
       "-print",
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: READONLY_SUBPROCESS_TIMEOUT_MS },
   );
   if (res.status !== 0) return "";
   return (res.stdout ?? "").split("\n").filter(Boolean).sort().join("\n");
@@ -686,6 +695,7 @@ export function scoreC13(c: SuiteSpec["criteria"][number]): CriterionResult {
   `;
   const res = spawnSync("sqlite3", ["-separator", "\t", ledgerDb, sql], {
     encoding: "utf8",
+    timeout: READONLY_SUBPROCESS_TIMEOUT_MS,
   });
   if (res.status !== 0) {
     return fail(c, `sqlite3 query failed: ${res.stderr}`);
