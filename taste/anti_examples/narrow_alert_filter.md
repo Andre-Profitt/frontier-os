@@ -12,7 +12,11 @@ with `alertSource = "factory.ai-stack-local-smoke"` (the factory's own emitted a
 
 Live result on the user's actual ledger: **0 alerts surfaced**, even though the lookback window (7 days) contained 4 high-severity historic alerts including `ai-stack-local-smoke-20260425-035014` — the failure that triggered the entire week of work.
 
-The reason: those historic alerts had `payload.source = "ai-stack.local-smoke-nightly"` (the legacy launchd-script source), not `"factory.ai-stack-local-smoke"` (the new factory-wrapper source). The substring filter matched the latter, which subsumed the former by accident in the substring sense — except the legacy source has a literal `.` instead of the factory prefix `factory.`, so the prefixes diverged and the filter dropped them.
+The reason, plainly:
+
+- The v1 filter looked for `factory.ai-stack-local-smoke`.
+- The legacy alert source was `ai-stack.local-smoke-nightly`.
+- Those are different emitters, so the legacy alert did not match.
 
 The packet's "Recent alerts" section was empty in production, while the user's ledger contained exactly the alert class the context pack was supposed to surface. **The context pack hid its own reason for existing.**
 

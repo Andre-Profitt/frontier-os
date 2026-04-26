@@ -72,8 +72,8 @@
   ],
   "calibration": {
     "exemplars": [
-      "/tmp/frontier-os-pr3-eval-suite-review-packet-v2.md (PR #3 v2 packet — accepted, merged)",
-      "/tmp/frontier-os-pr4-commit-msg-guard-review-packet-v2.md (PR #4 v2 packet)"
+      "PR #3 v2 (eval suite) — accepted by GPT Pro and merged at commit 25bdb31; the suite + tests live at evals/factory-quality/",
+      "PR #4 v2 (commit-msg guard) — accepted by GPT Pro and merged at commit d817267; the hook + tests live at scripts/hooks/ and tests/hooks/"
     ],
     "anti_examples": ["taste/anti_examples/wrong_repo_hallucination.md"]
   }

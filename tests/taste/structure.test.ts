@@ -245,6 +245,84 @@ test("narrow_alert_filter anti-example references assertLegacyAndFactoryCoverage
   assert.match(md, /ai-stack-local-smoke-20260425-035014/);
 });
 
+// --- durability: no ephemeral references in taste content ----------------
+// Per GPT Pro PR #5 review: the taste library must survive context loss.
+// References must point at durable artifacts (PR numbers, commit hashes,
+// repo file paths, snapshot branches, summarized incident text) — not at
+// /tmp/ files, ~/.claude/ paths, "this thread", local Desktop paths, or
+// other context that a future agent may not have access to.
+
+interface EphemeralRule {
+  pattern: RegExp;
+  why: string;
+}
+
+const EPHEMERAL_RULES: EphemeralRule[] = [
+  {
+    pattern: /\/tmp\//,
+    why: "/tmp paths are session-local and disappear on reboot",
+  },
+  {
+    pattern: /~\/\.claude/,
+    why: "~/.claude paths are private to the local agent state, not the repo",
+  },
+  {
+    pattern: /\bthis thread\b/i,
+    why: "'this thread' refers to a conversation that future agents won't have access to",
+  },
+  {
+    pattern: /\bmessage \d+\b/i,
+    why: "'message N' refers to chat positions that future agents won't have access to",
+  },
+  {
+    pattern: /~\/Desktop\//,
+    why: "~/Desktop paths are local clipboard-backup artifacts, not durable repo references",
+  },
+];
+
+function listAllTasteFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const p = resolve(dir, entry);
+    const st = statSync(p);
+    if (st.isDirectory()) {
+      out.push(...listAllTasteFiles(p));
+    } else if (/\.(md|json)$/.test(entry)) {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+test("no taste/ file contains ephemeral references", () => {
+  const files = listAllTasteFiles(TASTE_DIR);
+  assert.ok(files.length > 0, "expected at least one taste file");
+  const violations: string[] = [];
+  for (const path of files) {
+    const content = readFileSync(path, "utf8");
+    for (const rule of EPHEMERAL_RULES) {
+      // Find every line that contains the pattern; whitelist if the line
+      // is plainly the structural-test rule itself referencing the
+      // pattern in prose. The taste tree should not have any such
+      // self-references; this loop is just file content.
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (rule.pattern.test(line)) {
+          violations.push(
+            `${basename(path)}:${i + 1}: matches ${rule.pattern} (${rule.why}) — line: ${line.trim().slice(0, 120)}`,
+          );
+        }
+      }
+    }
+  }
+  assert.equal(
+    violations.length,
+    0,
+    `taste/ contains ${violations.length} ephemeral reference(s):\n${violations.join("\n")}`,
+  );
+});
+
 // --- cross-reference: every anti-example cited in a rubric exists --------
 
 test("rubric calibration.anti_examples references resolve to actual files", () => {

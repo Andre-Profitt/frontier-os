@@ -15,7 +15,7 @@ Concretely, the bug shape:
 - `classification = "passed"` ← wrong. The factory was telling the world the lane was healthy while the configuration drift that caused the original failure was still present.
 - `alertId = null` ← no alert fired because severity is keyed off classification.
 
-The user had introduced this exact stale-timeout case at the start of the session (the historic alert `ai-stack-local-smoke-20260425-035014` was a 30s `subprocess.TimeoutExpired`). v1 of the factory could not have detected a regression of that fix.
+The lane had exhibited this exact stale-timeout failure at the start of the session — the historic alert `ai-stack-local-smoke-20260425-035014` was a 30s `subprocess.TimeoutExpired` against the prior version of `/Users/test/bin/ai-stack-local-smoke`. v1 of the factory could not have detected a regression of that fix.
 
 ## Why it was wrong
 

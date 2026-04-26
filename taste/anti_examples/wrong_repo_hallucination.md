@@ -54,9 +54,13 @@ If a future handoff makes claims about the wrong repo, the agent has three indep
 
 ## Reference
 
-- Initial session detection: this thread, message 1 (the agent's response listing actual vs. handoff state).
-- Factory #1 PR cover: https://github.com/Andre-Profitt/frontier-os/pull/1 — describes the discovery and the snapshot branch (`snapshot/2026-04-26/pre-factory-dirty`, commit `46df6a2`) where the dirty pre-existing tree was preserved.
-- Phase 2 PR (context pack): https://github.com/Andre-Profitt/frontier-os/pull/2 — the explicit countermeasure.
+- Snapshot branch preserving the pre-existing dirty tree the handoff misdescribed: `snapshot/2026-04-26/pre-factory-dirty` at commit `46df6a2`.
+- Factory #1 PR cover: https://github.com/Andre-Profitt/frontier-os/pull/1 — describes the discovery and the snapshot branch.
+- Initial commit on `main` at session start: `331b620` (`Initial commit: frontier-os control plane`) — the only commit that existed when the handoff claimed `d08b4bf` and `c901462` were on `main`.
+- Phase 2 PR (context pack countermeasure): https://github.com/Andre-Profitt/frontier-os/pull/2 — merged at commit `2bb422b`.
+- Phase 2 implementation: `src/context/pack.ts` (`generateContextPack`, `renderMarkdown`).
 - Eval criterion C3: `evals/factory-quality/local-smoke-factory-quality.json:C3`.
 - C3 anti-example test: `evals/factory-quality/tests/quality.test.ts` — `"anti-example: wrong-repo context — repo.marker != 'frontier-os' fails C3"`.
-- Memory: `~/.claude/projects/-Users-test/memory/feedback_verify_handoff_claims.md` — "Handoff docs can hallucinate hard. Verify scores, file contents, job state against real logs/filesystem before acting."
+- Handoff rubric criterion H1 (repo identity is the first claim): `taste/rubrics/handoff_rubric.json:H1`.
+
+Operating principle: handoff prose is not a substitute for `git rev-parse HEAD` + `git status --short` + `git log --oneline -5`. Verify scores, file contents, and job state against real logs and filesystem before acting on any handoff claim.
