@@ -1,0 +1,28 @@
+{
+  "$schema": "../../schemas/skill.schema.json",
+  "skillId": "routine_summary",
+  "version": "v1",
+  "taskClass": "routine_summary",
+  "summary": "Compress logs, render command packets, summarize ledger windows. Local-first; cheap models are fine. No side effects beyond writing the worker's own scratch dir.",
+  "allowedRoles": ["summarizer", "triager"],
+  "allowedTools": [
+    "read.file",
+    "read.repo",
+    "read.ledger",
+    "read.mcp.frontier",
+    "write.worktree"
+  ],
+  "forbiddenTools": [
+    "exec.git.commit",
+    "exec.git.push",
+    "exec.shell.write",
+    "launchd.apply",
+    "adapter.salesforce.apply",
+    "broker.call"
+  ],
+  "maxParallel": 4,
+  "sideEffects": ["local_write"],
+  "verifierMode": "none",
+  "qualityFloor": 0.6,
+  "promptTemplate": "SKILL.md"
+}

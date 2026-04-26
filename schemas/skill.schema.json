@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/skill.schema.json",
+  "title": "FrontierOS Skill Contract",
+  "description": "Per-task-class agent contract. One file per skills/<task-class>/skill.json. Loaded by the inference broker (and future builders/reviewers) to bind task-class routing to a tool/permission/quality envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "skillId",
+    "version",
+    "taskClass",
+    "summary",
+    "allowedTools",
+    "forbiddenTools",
+    "sideEffects",
+    "verifierMode"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "skillId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+$"
+    },
+    "taskClass": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Must match a class name in config/model-policy.json:classes"
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "allowedRoles": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "builder",
+          "reviewer",
+          "researcher",
+          "summarizer",
+          "triager",
+          "arbiter",
+          "planner"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "allowedTools": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Verb vocabulary; see skills/README.md for the v1 list"
+    },
+    "forbiddenTools": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "maxParallel": { "type": "integer", "minimum": 1 },
+    "sideEffects": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "auth_change",
+          "billable_action",
+          "deploy",
+          "destructive_action",
+          "external_message",
+          "financial_action",
+          "local_write",
+          "none",
+          "pr_open",
+          "repo_write",
+          "shared_write",
+          "ticket_write"
+        ]
+      },
+      "uniqueItems": true,
+      "description": "Vocabulary aligned with schemas/work-graph.schema.json sideEffects"
+    },
+    "verifierMode": {
+      "enum": ["none", "required", "required_before_side_effect"]
+    },
+    "qualityFloor": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Minimum acceptable score from the relevant rubric. Optional; arbiter rejects below this."
+    },
+    "promptTemplate": {
+      "type": "string",
+      "description": "Filename of the prose template, relative to the skill dir. Default 'SKILL.md'."
+    },
+    "rubric": {
+      "type": "string",
+      "description": "Optional pointer to a taste/rubrics/*.json file used to grade output."
+    },
+    "antiExamples": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Pointers to taste/anti_examples/*.md the worker must not reproduce."
+    }
+  }
+}

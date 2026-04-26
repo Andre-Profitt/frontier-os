@@ -29,6 +29,7 @@ const workGraphSchema = load("work-graph.schema.json");
 const projectManifestSchema = load("project-manifest.schema.json");
 const commandEnvelopeSchema = load("command-envelope.schema.json");
 const commandResultSchema = load("command-result.schema.json");
+const skillSchema = load("skill.schema.json");
 
 export const validateAdapterManifest: ValidateFunction = ajv.compile(
   adapterManifestSchema,
@@ -51,6 +52,7 @@ export const validateCommandEnvelope: ValidateFunction = ajv.compile(
 );
 export const validateCommandResult: ValidateFunction =
   ajv.compile(commandResultSchema);
+export const validateSkill: ValidateFunction = ajv.compile(skillSchema);
 
 // ---- TypeScript mirrors of the JSON schemas (kept in sync manually) ----
 
@@ -176,7 +178,12 @@ export type ProjectKind =
   | "service"
   | "dormant";
 
-export type ProjectPriority = "critical" | "high" | "medium" | "low" | "dormant";
+export type ProjectPriority =
+  | "critical"
+  | "high"
+  | "medium"
+  | "low"
+  | "dormant";
 
 export interface ProjectCommandSpec {
   summary: string;
