@@ -1,0 +1,68 @@
+{
+  "$schema": "../schemas/model-policy.schema.json",
+  "version": "v1",
+  "summary": "Task-class → model routing for the inference broker. Local-only by default; add NIM models after `frontier model probe nvidia-nim` produces empirical capacity numbers.",
+  "providers": {
+    "nvidia-nim": {
+      "enabled": false,
+      "envKeyVar": "NVIDIA_API_KEY",
+      "envKeyVarFallback": "NIM_API_KEY",
+      "baseUrlOverrideEnvVar": "NIM_BASE_URL",
+      "defaultRpm": 24,
+      "defaultMaxParallel": 1
+    },
+    "ollama-local": {
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": null,
+      "defaultRpm": 600,
+      "defaultMaxParallel": 4
+    },
+    "lmstudio-local": {
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "apiKey": null,
+      "defaultRpm": 600,
+      "defaultMaxParallel": 2
+    }
+  },
+  "classes": {
+    "routine_summary": {
+      "summary": "Cheap log compression + pack rendering. Local first.",
+      "models": [
+        { "provider": "ollama-local", "model": "llama3.1:8b" },
+        { "provider": "lmstudio-local", "model": "qwen2.5-7b-instruct" }
+      ],
+      "maxParallel": 4
+    },
+    "patch_builder": {
+      "summary": "Generate code patches in isolated worktrees. Local default until NIM probe lands.",
+      "models": [{ "provider": "ollama-local", "model": "qwen2.5-coder:14b" }],
+      "maxParallel": 1
+    },
+    "adversarial_review": {
+      "summary": "Attack a candidate patch. Diversity matters more than raw quality.",
+      "models": [{ "provider": "ollama-local", "model": "deepseek-coder:33b" }],
+      "maxParallel": 1
+    },
+    "research_extraction": {
+      "summary": "Read sources and produce a claim ledger.",
+      "models": [{ "provider": "ollama-local", "model": "llama3.1:70b" }],
+      "maxParallel": 1
+    },
+    "merge_arbiter": {
+      "summary": "Final merge recommendation. Stays on the strongest trusted model. Empty until a frontier model is wired explicitly — broker will return a clear error rather than guess.",
+      "models": [],
+      "maxParallel": 1
+    }
+  },
+  "defaults": {
+    "rateLimitTargetFraction": 0.65,
+    "backoff": {
+      "baseMs": 500,
+      "maxMs": 30000,
+      "factor": 2
+    },
+    "requestTimeoutMs": 30000
+  }
+}

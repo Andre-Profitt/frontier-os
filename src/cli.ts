@@ -2791,6 +2791,138 @@ async function cmdSalesforceAuditBatch(
   }
 }
 
+// ---- model family (PR A: inference broker) ----
+
+async function cmdModelList(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const { ModelRegistry } = await import("./inference/model-registry.ts");
+  const registry = new ModelRegistry();
+  const summary = {
+    providers: registry.listProviderNames().map((name) => {
+      const entry = registry.providerEntry(name)!;
+      return {
+        name,
+        enabled: entry.enabled,
+        effectivelyEnabled: registry.providerEffectivelyEnabled(entry),
+        defaultRpm: entry.defaultRpm,
+        defaultMaxParallel: entry.defaultMaxParallel,
+        baseUrl: registry.resolveBaseUrl(name),
+        hasApiKey: registry.resolveApiKey(name) !== null,
+      };
+    }),
+    classes: Object.entries(registry.policy.classes).map(
+      ([name, classEntry]) => ({
+        name,
+        summary: classEntry.summary,
+        maxParallel: classEntry.maxParallel,
+        models: classEntry.models,
+        effectiveModels: registry.resolveClassModels(name),
+      }),
+    ),
+  };
+  void args;
+  out(summary, pretty);
+}
+
+async function cmdModelProbe(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const provider =
+    typeof args.flags.provider === "string"
+      ? args.flags.provider
+      : (args.positional[0] ?? "");
+  if (!provider) {
+    err({
+      error: "model probe requires <provider> (e.g. nvidia-nim, ollama-local)",
+    });
+    return;
+  }
+  const { ModelRegistry } = await import("./inference/model-registry.ts");
+  const registry = new ModelRegistry();
+  const entry = registry.providerEntry(provider);
+  if (!entry) {
+    err({
+      error: `unknown provider: ${provider}`,
+      expected: registry.listProviderNames(),
+    });
+    return;
+  }
+  if (!registry.providerEffectivelyEnabled(entry)) {
+    err({
+      error: `provider ${provider} not effectively enabled`,
+      detail:
+        entry.enabled === false
+          ? "policy says enabled: false (edit config/model-policy.json)"
+          : `auth env vars missing: ${[entry.envKeyVar, entry.envKeyVarFallback].filter(Boolean).join(" or ")}`,
+    });
+    return;
+  }
+
+  // Live probe: list models + measure latency on /v1/models.
+  const baseUrl = registry.resolveBaseUrl(provider);
+  if (!baseUrl) {
+    err({ error: `provider ${provider} has no baseUrl resolved` });
+    return;
+  }
+  const apiKey = registry.resolveApiKey(provider);
+  const { OpenAICompatibleProvider } =
+    await import("./inference/providers/openai-compatible.ts");
+  const config: { baseUrl: string; apiKey?: string } = { baseUrl };
+  if (apiKey) config.apiKey = apiKey;
+  const client = new OpenAICompatibleProvider(provider, config);
+  const t0 = Date.now();
+  const list = await client.listModels();
+  const elapsed = Date.now() - t0;
+  out(
+    {
+      provider,
+      baseUrl,
+      hasApiKey: apiKey !== null,
+      ok: list.ok,
+      status: list.status,
+      modelCount: list.ids.length,
+      modelsHead: list.ids.slice(0, 10),
+      probeDurationMs: elapsed,
+      generatedAt: new Date().toISOString(),
+    },
+    pretty,
+  );
+}
+
+async function cmdModelCall(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const taskClass =
+    typeof args.flags.class === "string" ? args.flags.class : "";
+  if (!taskClass) {
+    err({ error: "model call requires --class <taskClass>" });
+    return;
+  }
+  const prompt =
+    typeof args.flags.prompt === "string"
+      ? args.flags.prompt
+      : args.positional.join(" ");
+  if (!prompt) {
+    err({ error: "model call requires --prompt <text> (or positional)" });
+    return;
+  }
+  const { InferenceBroker } = await import("./inference/broker.ts");
+  const broker = new InferenceBroker();
+  const callOpts: {
+    taskClass: string;
+    messages: Array<{ role: "user"; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+  } = {
+    taskClass,
+    messages: [{ role: "user", content: prompt }],
+  };
+  if (typeof args.flags.temperature === "string") {
+    callOpts.temperature = parseFloat(args.flags.temperature);
+  }
+  if (typeof args.flags["max-tokens"] === "string") {
+    callOpts.max_tokens = parseInt(args.flags["max-tokens"], 10);
+  }
+  const res = await broker.callClass(callOpts);
+  out(res, pretty);
+  process.exit(res.ok ? 0 : 1);
+}
+
 // ---- context family (Phase 2: lane context pack) ----
 
 async function cmdContextPack(
@@ -3589,6 +3721,11 @@ async function main(): Promise<void> {
           context: [
             "pack --lane <lane> [--json] [--pretty] [--no-alerts] [--alert-lookback-days N]",
           ],
+          model: [
+            "list [--json] [--pretty]                                inventory of providers + classes + effective models",
+            "probe <provider>                                        live /v1/models call against the provider's base URL",
+            "call --class <taskClass> --prompt <text> [--temperature N] [--max-tokens N]   route through the broker",
+          ],
         },
         notes: [
           "Output is JSON by default. --json is accepted for explicit callers; pass --pretty for indented JSON.",
@@ -3913,6 +4050,22 @@ async function main(): Promise<void> {
       default:
         return err({
           error: `unknown eval subcommand: ${args.subcommand ?? "(none)"}`,
+        });
+    }
+  }
+
+  if (args.family === "model") {
+    switch (args.subcommand) {
+      case "list":
+        return cmdModelList(args, pretty);
+      case "probe":
+        return cmdModelProbe(args, pretty);
+      case "call":
+        return cmdModelCall(args, pretty);
+      default:
+        return err({
+          error: `unknown model subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["list", "probe", "call"],
         });
     }
   }
