@@ -68,7 +68,7 @@ export interface RepairResult {
   detail: string;
 }
 
-interface FactorySpec {
+export interface FactorySpec {
   factoryId: string;
   lane: {
     primaryVerifier: string[];
@@ -118,6 +118,9 @@ export function runPrimaryVerifier(
   opts: { timeoutMs?: number } = {},
 ): PrimaryVerifierOutput {
   const [cmd, ...args] = spec.lane.primaryVerifier;
+  if (cmd === undefined) {
+    throw new Error("factory.json lane.primaryVerifier is empty");
+  }
   const t0 = Date.now();
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
@@ -178,6 +181,9 @@ export function runInnerCheck(
   opts: { timeoutMs?: number } = {},
 ): VerifierOutput {
   const [cmd, ...args] = spec.lane.innerCheck;
+  if (cmd === undefined) {
+    throw new Error("factory.json lane.innerCheck is empty");
+  }
   const t0 = Date.now();
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
@@ -331,7 +337,7 @@ export function runBoundedRepair(spec: FactorySpec): RepairResult {
       detail: `could not locate frontier mcp smoke timeout literal in ${target}`,
     };
   }
-  const observed = Number.parseInt(m[1], 10);
+  const observed = Number.parseInt(m[1] ?? "", 10);
   if (observed >= min) {
     return {
       ran: true,
@@ -571,16 +577,24 @@ export async function runFactoryCell(
       },
     });
   }
-  const primaryRaw = runPrimaryVerifier(spec, {
-    timeoutMs: opts.primaryTimeoutMs,
-  });
+  const primaryRaw = runPrimaryVerifier(
+    spec,
+    opts.primaryTimeoutMs !== undefined
+      ? { timeoutMs: opts.primaryTimeoutMs }
+      : {},
+  );
   const primary = classifyPrimaryVerifier(primaryRaw);
 
   // 4. Inner check (supplementary). Skippable; primary already ran the same
   //    check internally, so this is observability only.
   let inner: InnerCheckResult | null = null;
   if (!opts.skipInnerCheck) {
-    const innerRaw = runInnerCheck(spec, { timeoutMs: opts.innerTimeoutMs });
+    const innerRaw = runInnerCheck(
+      spec,
+      opts.innerTimeoutMs !== undefined
+        ? { timeoutMs: opts.innerTimeoutMs }
+        : {},
+    );
     inner = classifyInnerCheck(innerRaw);
   }
 

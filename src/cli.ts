@@ -2904,6 +2904,60 @@ async function cmdFactoryStatus(
   process.exit(code);
 }
 
+// ---- factory reconcile (control-loop entry; mutating) ----
+
+async function cmdFactoryReconcile(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const factoryId =
+    typeof args.flags.lane === "string"
+      ? args.flags.lane
+      : (args.positional[0] ?? "");
+  if (factoryId !== "ai-stack-local-smoke") {
+    err({
+      error: `factory reconcile only supports ai-stack-local-smoke today`,
+      received: factoryId,
+    });
+    return;
+  }
+  const desiredMode =
+    typeof args.flags.mode === "string"
+      ? (args.flags.mode as "shadow" | "active" | "observe" | "disabled")
+      : "shadow";
+  const trigger =
+    typeof args.flags.trigger === "string"
+      ? (args.flags.trigger as "manual" | "launchd" | "watchdog")
+      : "manual";
+  const staleAfterHours =
+    typeof args.flags["stale-after-hours"] === "string"
+      ? Number(args.flags["stale-after-hours"])
+      : 26;
+  const { reconcileLocalSmokeFactory } =
+    await import("../factories/ai-stack-local-smoke/reconciler.ts");
+  const rec = await reconcileLocalSmokeFactory({
+    factoryId: "ai-stack-local-smoke",
+    desiredMode,
+    trigger,
+    staleAfterHours,
+  });
+  out(rec, pretty);
+  // Same exit-code mapping as factory status, plus 6 for reconciler crash.
+  const code =
+    rec.status === "fresh"
+      ? 0
+      : rec.status === "stale" || rec.status === "missing"
+        ? 1
+        : rec.status === "failed"
+          ? 2
+          : rec.status === "ambiguous"
+            ? 3
+            : rec.status === "disabled"
+              ? 4
+              : 5;
+  process.exit(code);
+}
+
 // ---- context family (Phase 2: lane context pack) ----
 
 async function cmdContextPack(
@@ -3704,6 +3758,7 @@ async function main(): Promise<void> {
           ],
           factory: [
             "status <factoryId> [--json] [--pretty]  exit 0 fresh, 1 stale|missing, 2 failed, 3 ambiguous, 4 disabled, 5 locked",
+            "reconcile <factoryId> [--mode shadow|active|observe|disabled] [--trigger manual|launchd|watchdog] [--stale-after-hours 26]  observe→decide→apply→assert; same exit-code mapping",
           ],
         },
         notes: [
@@ -4049,10 +4104,12 @@ async function main(): Promise<void> {
     switch (args.subcommand) {
       case "status":
         return cmdFactoryStatus(args, pretty);
+      case "reconcile":
+        return cmdFactoryReconcile(args, pretty);
       default:
         return err({
           error: `unknown factory subcommand: ${args.subcommand ?? "(none)"}`,
-          expected: ["status"],
+          expected: ["status", "reconcile"],
         });
     }
   }
