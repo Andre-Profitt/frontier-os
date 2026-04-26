@@ -3119,6 +3119,73 @@ async function cmdEvalStats(pretty: boolean): Promise<void> {
 
 // ---- swarm family (Phase 11: Magentic-One worktree swarm) ----
 
+async function cmdSwarmBuild(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const taskId =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const description =
+    typeof args.flags.description === "string"
+      ? args.flags.description
+      : undefined;
+  if (!taskId || !description) {
+    err({
+      error:
+        "swarm build requires --task <id> --description <text> [--touch-list a,b,c] [--builders 3] [--base-branch X] [--models nim:k1,nim:k2]",
+    });
+    return;
+  }
+  const builderCount =
+    typeof args.flags.builders === "string"
+      ? parseInt(args.flags.builders, 10)
+      : 3;
+  const taskClass =
+    typeof args.flags["task-class"] === "string"
+      ? args.flags["task-class"]
+      : "patch_builder";
+  const baseBranch =
+    typeof args.flags["base-branch"] === "string"
+      ? args.flags["base-branch"]
+      : undefined;
+  const touchList =
+    typeof args.flags["touch-list"] === "string"
+      ? args.flags["touch-list"]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  const modelKeys =
+    typeof args.flags.models === "string"
+      ? args.flags.models
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined;
+
+  const { runBuilderSwarm } = await import("./swarm/builder-swarm.ts");
+  const { InferenceBroker } = await import("./inference/broker.ts");
+  const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+
+  const broker = new InferenceBroker();
+  const worktreeManager = new WorktreeManager();
+  const packet = await runBuilderSwarm(
+    { broker, worktreeManager },
+    {
+      taskId,
+      taskDescription: description,
+      touchList,
+      builderCount,
+      taskClass,
+      ...(baseBranch ? { baseBranch } : {}),
+      ...(modelKeys ? { modelKeys } : {}),
+    },
+  );
+  out(packet, pretty);
+  // Exit 2 when zero candidates collected — arbiter has nothing to rank.
+  const collected = packet.candidates.filter(
+    (c) => c.ok && c.phase === "collected",
+  );
+  if (collected.length === 0) process.exit(2);
+}
+
 async function cmdSwarmReview(
   args: ParsedArgs,
   pretty: boolean,
@@ -4403,10 +4470,12 @@ async function main(): Promise<void> {
         return cmdSwarmList(args, pretty);
       case "review":
         return cmdSwarmReview(args, pretty);
+      case "build":
+        return cmdSwarmBuild(args, pretty);
       default:
         return err({
           error: `unknown swarm subcommand: ${args.subcommand ?? "(none)"}`,
-          expected: ["run", "list", "review"],
+          expected: ["run", "list", "review", "build"],
         });
     }
   }
