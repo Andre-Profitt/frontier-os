@@ -502,7 +502,10 @@ async function cmdWatcherRun(args: ParsedArgs, pretty: boolean): Promise<void> {
 // ---- project registry ----
 
 async function cmdProjectList(pretty: boolean): Promise<void> {
-  const daemonBody = await tryDaemonRead({ flags: {}, positional: [], family: "project" }, "/v1/projects");
+  const daemonBody = await tryDaemonRead(
+    { flags: {}, positional: [], family: "project" },
+    "/v1/projects",
+  );
   if (daemonBody !== null) {
     out({ servedBy: "frontierd", ...recordFromUnknown(daemonBody) }, pretty);
     return;
@@ -516,7 +519,8 @@ async function cmdProjectInspect(
   pretty: boolean,
 ): Promise<void> {
   const projectId = args.positional[0];
-  if (!projectId) return err({ error: "project inspect requires a project id" });
+  if (!projectId)
+    return err({ error: "project inspect requires a project id" });
   try {
     const { findProjectManifest } = await import("./projects/registry.ts");
     out({ project: findProjectManifest(projectId) }, pretty);
@@ -558,7 +562,11 @@ async function cmdProjectStatus(
       );
     } else {
       out(
-        { servedBy: "local", generatedAt: new Date().toISOString(), project: status },
+        {
+          servedBy: "local",
+          generatedAt: new Date().toISOString(),
+          project: status,
+        },
         pretty,
       );
     }
@@ -632,7 +640,8 @@ async function cmdProjectRunDeclared(
   command: "verify" | "smoke" | "dev",
 ): Promise<void> {
   const projectId = args.positional[0];
-  if (!projectId) return err({ error: `project ${command} requires a project id` });
+  if (!projectId)
+    return err({ error: `project ${command} requires a project id` });
   try {
     const { runProjectCommand } = await import("./projects/runner.ts");
     const result = runProjectCommand(projectId, command, {
@@ -640,7 +649,8 @@ async function cmdProjectRunDeclared(
       consumeApproval: args.flags["consume-token"] === true,
     });
     out(result, pretty);
-    if (result.status !== "passed" && result.status !== "planned") process.exit(2);
+    if (result.status !== "passed" && result.status !== "planned")
+      process.exit(2);
   } catch (e) {
     return err({
       error: `project ${command} failed`,
@@ -722,18 +732,14 @@ async function tryDaemonRead(
   path: string,
 ): Promise<unknown | null> {
   if (args.flags.local === true) return null;
-  const { requestDaemon, defaultDaemonSocketPath } = await import(
-    "./daemon/server.ts"
-  );
+  const { requestDaemon, defaultDaemonSocketPath } =
+    await import("./daemon/server.ts");
   const socketPath = daemonSocketArg(args) ?? defaultDaemonSocketPath();
   const result = await requestDaemon(path, { socketPath, timeoutMs: 1500 });
   return result.reachable && result.statusCode === 200 ? result.body : null;
 }
 
-async function cmdDaemonRun(
-  args: ParsedArgs,
-  pretty: boolean,
-): Promise<void> {
+async function cmdDaemonRun(args: ParsedArgs, pretty: boolean): Promise<void> {
   const { startDaemon } = await import("./daemon/server.ts");
   try {
     const socketPath = daemonSocketArg(args);
@@ -764,9 +770,8 @@ async function cmdDaemonStatus(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const { requestDaemon, defaultDaemonSocketPath } = await import(
-    "./daemon/server.ts"
-  );
+  const { requestDaemon, defaultDaemonSocketPath } =
+    await import("./daemon/server.ts");
   const socketPath = daemonSocketArg(args) ?? defaultDaemonSocketPath();
   const result = await requestDaemon("/health", { socketPath });
   if (!result.reachable) {
@@ -796,9 +801,8 @@ async function cmdDaemonHealth(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const { requestDaemon, defaultDaemonSocketPath } = await import(
-    "./daemon/server.ts"
-  );
+  const { requestDaemon, defaultDaemonSocketPath } =
+    await import("./daemon/server.ts");
   const socketPath = daemonSocketArg(args) ?? defaultDaemonSocketPath();
   const result = await requestDaemon("/health", { socketPath });
   if (!result.reachable || result.statusCode !== 200) {
@@ -817,13 +821,9 @@ async function cmdDaemonHealth(
   out(result.body, pretty);
 }
 
-async function cmdDaemonStop(
-  args: ParsedArgs,
-  pretty: boolean,
-): Promise<void> {
-  const { requestDaemon, defaultDaemonSocketPath } = await import(
-    "./daemon/server.ts"
-  );
+async function cmdDaemonStop(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const { requestDaemon, defaultDaemonSocketPath } =
+    await import("./daemon/server.ts");
   const socketPath = daemonSocketArg(args) ?? defaultDaemonSocketPath();
   const result = await requestDaemon("/shutdown", {
     socketPath,
@@ -937,9 +937,8 @@ function stringArrayFromUnknown(value: unknown): string[] | undefined {
 }
 
 async function policyActionFromArgs(args: ParsedArgs) {
-  const { buildActionEnvelope, parseApprovalClass } = await import(
-    "./policy/evaluator.ts"
-  );
+  const { buildActionEnvelope, parseApprovalClass } =
+    await import("./policy/evaluator.ts");
   let input: Record<string, unknown> = {};
   if (args.flags.input !== undefined) {
     input = parseInputFlag(args.flags.input);
@@ -1001,9 +1000,8 @@ async function cmdPolicySimulate(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const { evaluatePolicyAction, logPolicyEvaluation } = await import(
-    "./policy/evaluator.ts"
-  );
+  const { evaluatePolicyAction, logPolicyEvaluation } =
+    await import("./policy/evaluator.ts");
   try {
     const action = await policyActionFromArgs(args);
     const evaluation = evaluatePolicyAction(action);
@@ -1023,9 +1021,8 @@ async function cmdPolicyEvaluate(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const { evaluatePolicyAction, logPolicyEvaluation } = await import(
-    "./policy/evaluator.ts"
-  );
+  const { evaluatePolicyAction, logPolicyEvaluation } =
+    await import("./policy/evaluator.ts");
   try {
     const action = await policyActionFromArgs(args);
     const evaluation = evaluatePolicyAction(action, {
@@ -1051,7 +1048,8 @@ async function cmdPolicyApprove(
   const { approveTrace, parseTtlMs } = await import("./policy/evaluator.ts");
   const traceId =
     typeof args.flags["trace-id"] === "string" ? args.flags["trace-id"] : "";
-  if (!traceId) return err({ error: "policy approve requires --trace-id <id>" });
+  if (!traceId)
+    return err({ error: "policy approve requires --trace-id <id>" });
   try {
     const ttlMs = parseTtlMs(
       typeof args.flags.ttl === "string" ? args.flags.ttl : undefined,
@@ -1079,7 +1077,8 @@ async function cmdPolicyConsume(
   const { consumeApprovalToken } = await import("./policy/evaluator.ts");
   const traceId =
     typeof args.flags["trace-id"] === "string" ? args.flags["trace-id"] : "";
-  if (!traceId) return err({ error: "policy consume requires --trace-id <id>" });
+  if (!traceId)
+    return err({ error: "policy consume requires --trace-id <id>" });
   const result = consumeApprovalToken(traceId);
   closeLedger();
   out(result, pretty);
@@ -1094,7 +1093,9 @@ async function cmdApprovalList(
 ): Promise<void> {
   try {
     const limit =
-      typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 25;
+      typeof args.flags.limit === "string"
+        ? parseInt(args.flags.limit, 10)
+        : 25;
     const daemonBody = await tryDaemonRead(
       args,
       `/v1/approvals?limit=${encodeURIComponent(String(limit))}${
@@ -1128,7 +1129,8 @@ async function cmdApprovalApprove(
   const traceId = args.positional[0];
   if (!traceId) return err({ error: "approval approve requires a trace id" });
   const ttl = typeof args.flags.ttl === "string" ? args.flags.ttl : "15m";
-  const actor = typeof args.flags.actor === "string" ? args.flags.actor : "operator";
+  const actor =
+    typeof args.flags.actor === "string" ? args.flags.actor : "operator";
   try {
     const daemonBody = await tryDaemonPost(
       args,
@@ -1254,7 +1256,11 @@ function mlxwArgsFor(args: ParsedArgs, subcommand: string): string[] {
   return outArgs;
 }
 
-function appendStringFlag(outArgs: string[], args: ParsedArgs, flag: string): void {
+function appendStringFlag(
+  outArgs: string[],
+  args: ParsedArgs,
+  flag: string,
+): void {
   if (typeof args.flags[flag] === "string") {
     outArgs.push(`--${flag}`, args.flags[flag]);
   }
@@ -1312,7 +1318,8 @@ async function commandInputFromArgs(args: ParsedArgs) {
     surface: "cli",
     origin: "frontier-cli",
   };
-  if (typeof args.flags.project === "string") input.projectId = args.flags.project;
+  if (typeof args.flags.project === "string")
+    input.projectId = args.flags.project;
   if (typeof args.flags.actor === "string") input.actorId = args.flags.actor;
   if (typeof args.flags["trace-id"] === "string") {
     input.traceId = args.flags["trace-id"];
@@ -1323,7 +1330,8 @@ async function commandInputFromArgs(args: ParsedArgs) {
   const classFlag = args.flags.class ?? args.flags["approval-class"];
   const approvalClass = parseApprovalClass(classFlag);
   if (approvalClass !== null) input.approvalClass = approvalClass;
-  if (args.flags.input !== undefined) input.payload = parseInputFlag(args.flags.input);
+  if (args.flags.input !== undefined)
+    input.payload = parseInputFlag(args.flags.input);
   const policy: NonNullable<typeof input.policy> = {};
   if (typeof args.flags["max-runtime-seconds"] === "string") {
     const parsed = parseInt(args.flags["max-runtime-seconds"], 10);
@@ -1360,9 +1368,8 @@ async function tryDaemonPost(
   body: Record<string, unknown>,
 ): Promise<unknown | null> {
   if (args.flags.local === true) return null;
-  const { requestDaemon, defaultDaemonSocketPath } = await import(
-    "./daemon/server.ts"
-  );
+  const { requestDaemon, defaultDaemonSocketPath } =
+    await import("./daemon/server.ts");
   const socketPath = daemonSocketArg(args) ?? defaultDaemonSocketPath();
   const result = await requestDaemon(path, {
     socketPath,
@@ -1381,9 +1388,8 @@ async function cmdCommandSubmit(
     const input = await commandInputFromArgs(args);
     if (input.dryRun === true) {
       const { explainCommand } = await import("./commands/store.ts");
-      const { writeCommandGraphFromExplain } = await import(
-        "./commands/compiler.ts"
-      );
+      const { writeCommandGraphFromExplain } =
+        await import("./commands/compiler.ts");
       const explained = explainCommand(input);
       const graph = writeCommandGraphFromExplain(explained);
       closeLedger();
@@ -1456,7 +1462,10 @@ async function cmdCommandList(
       const parsedStatus = commandStatusFromString(status);
       if (parsedStatus !== undefined) listOptions.status = parsedStatus;
       const commands = store.list(listOptions);
-      out({ servedBy: "local", generatedAt: new Date().toISOString(), commands }, pretty);
+      out(
+        { servedBy: "local", generatedAt: new Date().toISOString(), commands },
+        pretty,
+      );
     } finally {
       store.close();
     }
@@ -1561,7 +1570,8 @@ async function cmdCommandArtifacts(
   pretty: boolean,
 ): Promise<void> {
   const commandId = args.positional[0];
-  if (!commandId) return err({ error: "command artifacts requires a command id" });
+  if (!commandId)
+    return err({ error: "command artifacts requires a command id" });
   try {
     const daemonBody = await tryDaemonRead(
       args,
@@ -1677,7 +1687,8 @@ async function cmdCommandRemember(
   pretty: boolean,
 ): Promise<void> {
   const commandId = args.positional[0];
-  if (!commandId) return err({ error: "command remember requires a command id" });
+  if (!commandId)
+    return err({ error: "command remember requires a command id" });
   try {
     const { rememberCommand } = await import("./commands/memory.ts");
     const options: Parameters<typeof rememberCommand>[1] = {};
@@ -1705,8 +1716,10 @@ async function cmdCommandBrief(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const hours = typeof args.flags.hours === "string" ? parseInt(args.flags.hours, 10) : 24;
-  const limit = typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 100;
+  const hours =
+    typeof args.flags.hours === "string" ? parseInt(args.flags.hours, 10) : 24;
+  const limit =
+    typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 100;
   const safeHours = Number.isFinite(hours) && hours > 0 ? hours : 24;
   const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
   try {
@@ -1719,7 +1732,13 @@ async function cmdCommandBrief(
       return;
     }
     const { commandBrief } = await import("./commands/brief.ts");
-    out({ servedBy: "local", ...commandBrief({ hours: safeHours, limit: safeLimit }) }, pretty);
+    out(
+      {
+        servedBy: "local",
+        ...commandBrief({ hours: safeHours, limit: safeLimit }),
+      },
+      pretty,
+    );
   } catch (e) {
     return err({
       error: "command brief failed",
@@ -1732,8 +1751,10 @@ async function cmdCommandReadiness(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const hours = typeof args.flags.hours === "string" ? parseInt(args.flags.hours, 10) : 24;
-  const limit = typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 100;
+  const hours =
+    typeof args.flags.hours === "string" ? parseInt(args.flags.hours, 10) : 24;
+  const limit =
+    typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 100;
   const safeHours = Number.isFinite(hours) && hours > 0 ? hours : 24;
   const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
   try {
@@ -1768,7 +1789,8 @@ async function cmdCommandDebt(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const limit = typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 100;
+  const limit =
+    typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 100;
   const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
   try {
     const query = `/v1/command-debt?limit=${encodeURIComponent(String(safeLimit))}`;
@@ -1794,7 +1816,8 @@ async function cmdCommandCancel(
   const commandId = args.positional[0];
   if (!commandId) return err({ error: "command cancel requires a command id" });
   try {
-    const actor = typeof args.flags.actor === "string" ? args.flags.actor : "operator";
+    const actor =
+      typeof args.flags.actor === "string" ? args.flags.actor : "operator";
     const daemonBody = await tryDaemonPost(
       args,
       `/v1/commands/${encodeURIComponent(commandId)}/cancel`,
@@ -1829,7 +1852,8 @@ async function cmdCommandRetry(
   const commandId = args.positional[0];
   if (!commandId) return err({ error: "command retry requires a command id" });
   try {
-    const actor = typeof args.flags.actor === "string" ? args.flags.actor : "operator";
+    const actor =
+      typeof args.flags.actor === "string" ? args.flags.actor : "operator";
     const daemonBody = await tryDaemonPost(
       args,
       `/v1/commands/${encodeURIComponent(commandId)}/retry`,
@@ -1862,9 +1886,11 @@ async function cmdCommandRequeue(
   pretty: boolean,
 ): Promise<void> {
   const commandId = args.positional[0];
-  if (!commandId) return err({ error: "command requeue requires a command id" });
+  if (!commandId)
+    return err({ error: "command requeue requires a command id" });
   try {
-    const actor = typeof args.flags.actor === "string" ? args.flags.actor : "operator";
+    const actor =
+      typeof args.flags.actor === "string" ? args.flags.actor : "operator";
     const daemonBody = await tryDaemonPost(
       args,
       `/v1/commands/${encodeURIComponent(commandId)}/requeue`,
@@ -1900,9 +1926,11 @@ async function cmdCommandResume(
   if (!commandId) return err({ error: "command resume requires a command id" });
   try {
     const body: Record<string, unknown> = {};
-    if (typeof args.flags.approval === "string") body.approval = args.flags.approval;
+    if (typeof args.flags.approval === "string")
+      body.approval = args.flags.approval;
     if (typeof args.flags.actor === "string") body.actor = args.flags.actor;
-    if (args.flags.input !== undefined) body.resumePayload = parseInputFlag(args.flags.input);
+    if (args.flags.input !== undefined)
+      body.resumePayload = parseInputFlag(args.flags.input);
     const daemonBody = await tryDaemonPost(
       args,
       `/v1/commands/${encodeURIComponent(commandId)}/resume`,
@@ -1921,7 +1949,8 @@ async function cmdCommandResume(
         actor?: string;
         resumePayload?: Record<string, unknown>;
       } = { commandId };
-      if (typeof body.approval === "string") opts.approvalTraceId = body.approval;
+      if (typeof body.approval === "string")
+        opts.approvalTraceId = body.approval;
       if (typeof body.actor === "string") opts.actor = body.actor;
       if (recordFromUnknown(body.resumePayload) === body.resumePayload) {
         opts.resumePayload = body.resumePayload as Record<string, unknown>;
@@ -1969,9 +1998,8 @@ async function cmdCommandWorker(
       return;
     }
     if (action === "run") {
-      const { runCommandWorkerLoop, runCommandWorkerOnce } = await import(
-        "./commands/worker.ts"
-      );
+      const { runCommandWorkerLoop, runCommandWorkerOnce } =
+        await import("./commands/worker.ts");
       const opts: {
         workerId?: string;
         leaseMs?: number;
@@ -1996,7 +2024,9 @@ async function cmdCommandWorker(
         }
       }
       if (args.flags.loop === true) {
-        const loopOpts: Parameters<typeof runCommandWorkerLoop>[0] = { ...opts };
+        const loopOpts: Parameters<typeof runCommandWorkerLoop>[0] = {
+          ...opts,
+        };
         if (typeof args.flags["interval-ms"] === "string") {
           loopOpts.intervalMs = parseInt(args.flags["interval-ms"], 10);
         }
@@ -2041,9 +2071,8 @@ async function cmdCommandWorker(
       return;
     }
     if (action === "install-user-agent") {
-      const { installCommandWorkerLaunchAgent } = await import(
-        "./commands/launchd.ts"
-      );
+      const { installCommandWorkerLaunchAgent } =
+        await import("./commands/launchd.ts");
       const opts: Parameters<typeof installCommandWorkerLaunchAgent>[0] = {
         ...commandWorkerLaunchAgentOptions(args),
         dryRun: args.flags["dry-run"] === true,
@@ -2181,7 +2210,9 @@ async function cmdMcpCall(args: ParsedArgs, pretty: boolean): Promise<void> {
 
 async function cmdMcpSmoke(args: ParsedArgs, pretty: boolean): Promise<void> {
   const { smokeMcpBridge } = await import("./mcp/bridge.ts");
-  const result = await smokeMcpBridge({ readOnly: args.flags["read-only"] === true });
+  const result = await smokeMcpBridge({
+    readOnly: args.flags["read-only"] === true,
+  });
   out(result, pretty);
   if (result.status !== "ok") process.exit(2);
 }
@@ -2328,18 +2359,16 @@ async function cmdHelperStatus(pretty: boolean): Promise<void> {
 }
 
 async function cmdHelperBuild(pretty: boolean): Promise<void> {
-  const { buildNativeHelper, helperInstallPlan } = await import(
-    "./helper/install.ts"
-  );
+  const { buildNativeHelper, helperInstallPlan } =
+    await import("./helper/install.ts");
   const build = buildNativeHelper();
   out({ build, installPlan: helperInstallPlan() }, pretty);
   if (build.status !== "built") process.exit(2);
 }
 
 async function cmdHelperInstall(pretty: boolean): Promise<void> {
-  const { applyRootInstallViaOsascript, helperInstallPlan } = await import(
-    "./helper/install.ts"
-  );
+  const { applyRootInstallViaOsascript, helperInstallPlan } =
+    await import("./helper/install.ts");
   if (process.argv.includes("--apply")) {
     const result = applyRootInstallViaOsascript();
     out(result, pretty);
@@ -2361,7 +2390,8 @@ async function cmdHelperProductionInvoke(
   pretty: boolean,
 ): Promise<void> {
   const opts = helperInvokeOptionsFromArgs(args);
-  if (!opts.verb) return err({ error: "helper production-invoke requires a verb" });
+  if (!opts.verb)
+    return err({ error: "helper production-invoke requires a verb" });
   const path = productionHelperPath(opts);
   const { requestProductionHelper } = await import("./helper/install.ts");
   const result = await requestProductionHelper(path);
@@ -2369,7 +2399,9 @@ async function cmdHelperProductionInvoke(
   if (!result.reachable || result.statusCode !== 200) process.exit(2);
 }
 
-function productionHelperPath(opts: ReturnType<typeof helperInvokeOptionsFromArgs>): string {
+function productionHelperPath(
+  opts: ReturnType<typeof helperInvokeOptionsFromArgs>,
+): string {
   switch (opts.verb) {
     case "helper.status":
       return "/v1/helper/status";
@@ -2411,9 +2443,8 @@ async function cmdRouteExplain(
   args: ParsedArgs,
   pretty: boolean,
 ): Promise<void> {
-  const { explainRoute, parseRouteApprovalClass } = await import(
-    "./router/explain.ts"
-  );
+  const { explainRoute, parseRouteApprovalClass } =
+    await import("./router/explain.ts");
   const verb = typeof args.flags.verb === "string" ? args.flags.verb : "";
   if (!verb) return err({ error: "route explain requires --verb <verb>" });
   const projectId =
@@ -2421,7 +2452,9 @@ async function cmdRouteExplain(
   const classFlag = args.flags.class ?? args.flags["approval-class"];
   const approvalClass = parseRouteApprovalClass(classFlag);
   const traceId =
-    typeof args.flags["trace-id"] === "string" ? args.flags["trace-id"] : undefined;
+    typeof args.flags["trace-id"] === "string"
+      ? args.flags["trace-id"]
+      : undefined;
   out(
     explainRoute({
       verb,
@@ -2453,7 +2486,10 @@ async function cmdOvernightSmoke(pretty: boolean): Promise<void> {
   if (result.status !== "ok") process.exit(2);
 }
 
-async function cmdOvernightPlan(args: ParsedArgs, pretty: boolean): Promise<void> {
+async function cmdOvernightPlan(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
   const hours =
     typeof args.flags.hours === "string" ? parseInt(args.flags.hours, 10) : 8;
   try {
@@ -2554,7 +2590,10 @@ async function cmdOvernightRun(
     const result = await runOvernightPlan(opts);
     closeLedger();
     out(result, pretty);
-    if (!result.dryRun && (result.status === "failed" || result.status === "blocked")) {
+    if (
+      !result.dryRun &&
+      (result.status === "failed" || result.status === "blocked")
+    ) {
       process.exit(2);
     }
   } catch (e) {
@@ -2749,6 +2788,51 @@ async function cmdSalesforceAuditBatch(
   }
   if (result.status !== 0 && result.status !== null) {
     process.exit(result.status);
+  }
+}
+
+// ---- context family (Phase 2: lane context pack) ----
+
+async function cmdContextPack(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const lane =
+    typeof args.flags.lane === "string"
+      ? args.flags.lane
+      : (args.positional[0] ?? "");
+  if (!lane) {
+    err({ error: "context pack requires --lane <lane> (or a positional)" });
+    return;
+  }
+  const wantJson =
+    pretty || args.flags.json === true || args.flags.json === "true";
+  const { generateContextPack, renderMarkdown } =
+    await import("./context/pack.ts");
+  const packOpts: Parameters<typeof generateContextPack>[0] = {
+    lane,
+    includeAlerts: args.flags["no-alerts"] !== true,
+  };
+  if (typeof args.flags["alert-lookback-days"] === "string") {
+    packOpts.alertLookbackDays = parseInt(
+      args.flags["alert-lookback-days"],
+      10,
+    );
+  }
+  let pack;
+  try {
+    pack = generateContextPack(packOpts);
+  } catch (e) {
+    err({
+      error: e instanceof Error ? e.message : String(e),
+      lane,
+    });
+    return;
+  }
+  if (wantJson) {
+    out(pack, pretty);
+  } else {
+    process.stdout.write(renderMarkdown(pack));
   }
 }
 
@@ -3360,14 +3444,14 @@ async function main(): Promise<void> {
             "final-brief <commandId> [--event-limit N]",
             "backup [--dest-dir path]",
             "remember <commandId> [--class run|operational|procedural|evaluative] [--namespace path] [--label name]",
-          "brief [--hours N] [--limit N]",
-          "readiness [--hours N] [--limit N]",
-          "debt [--limit N]",
-          "resume <commandId> [--approval <traceId>]",
-          "retry <commandId> [--actor name]",
-          "requeue <commandId> [--actor name]",
-          "cancel <commandId> [--actor name]",
-          "worker status",
+            "brief [--hours N] [--limit N]",
+            "readiness [--hours N] [--limit N]",
+            "debt [--limit N]",
+            "resume <commandId> [--approval <traceId>]",
+            "retry <commandId> [--actor name]",
+            "requeue <commandId> [--actor name]",
+            "cancel <commandId> [--actor name]",
+            "worker status",
             "worker run [--command <commandId>] [--worker-id ID] [--max-approval-class N]",
             "worker run --loop [--max-runtime-ms N] [--idle-exit-ms N] [--max-commands N]",
             "worker print-plist [--max-approval-class N]",
@@ -3501,6 +3585,9 @@ async function main(): Promise<void> {
           eval: [
             "run [--since ISO] [--limit N] [--rule-id ID] [--fail-on-regression]",
             "stats",
+          ],
+          context: [
+            "pack --lane <lane> [--json] [--pretty] [--no-alerts] [--alert-lookback-days N]",
           ],
         },
         notes: [
@@ -3826,6 +3913,18 @@ async function main(): Promise<void> {
       default:
         return err({
           error: `unknown eval subcommand: ${args.subcommand ?? "(none)"}`,
+        });
+    }
+  }
+
+  if (args.family === "context") {
+    switch (args.subcommand) {
+      case "pack":
+        return cmdContextPack(args, pretty);
+      default:
+        return err({
+          error: `unknown context subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["pack"],
         });
     }
   }
