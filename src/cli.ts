@@ -2886,6 +2886,133 @@ async function cmdModelProbe(args: ParsedArgs, pretty: boolean): Promise<void> {
   );
 }
 
+async function cmdModelCapacityScan(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { ModelRegistry } = await import("./inference/model-registry.ts");
+  const {
+    probeModelCapacity,
+    loadCapacityFile,
+    mergeCapacityRecord,
+    saveCapacityFile,
+    DEFAULT_CAPACITY_PATH,
+  } = await import("./inference/capacity-probe.ts");
+  type ModelCapacityRecord = Awaited<ReturnType<typeof probeModelCapacity>>;
+  const { OpenAICompatibleProvider } =
+    await import("./inference/providers/openai-compatible.ts");
+  const { NvidiaNIMProvider } =
+    await import("./inference/providers/nvidia-nim.ts");
+
+  const providerFilter =
+    typeof args.flags.provider === "string" ? args.flags.provider : undefined;
+  const modelFilter =
+    typeof args.flags.model === "string" ? args.flags.model : undefined;
+  const budgetCalls =
+    typeof args.flags["budget-calls"] === "string"
+      ? parseInt(args.flags["budget-calls"], 10)
+      : 100;
+  const latencySamples =
+    typeof args.flags["latency-samples"] === "string"
+      ? parseInt(args.flags["latency-samples"], 10)
+      : 3;
+  const outputPath =
+    typeof args.flags.output === "string"
+      ? args.flags.output
+      : DEFAULT_CAPACITY_PATH;
+  const dryRun = args.flags["dry-run"] === true;
+
+  const registry = new ModelRegistry();
+
+  // Resolve which (provider, model) pairs to scan. Walk every class, dedupe
+  // by modelKey, filter by --provider / --model, drop providers whose env
+  // auth is missing.
+  const seen = new Set<string>();
+  const targets: Array<{ provider: string; model: string }> = [];
+  for (const [, cls] of Object.entries(registry.policy.classes)) {
+    for (const m of cls.models) {
+      if (providerFilter && m.provider !== providerFilter) continue;
+      if (modelFilter && m.model !== modelFilter) continue;
+      const p = registry.providerEntry(m.provider);
+      if (!p || !registry.providerEffectivelyEnabled(p)) continue;
+      const key = `${m.provider}:${m.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ provider: m.provider, model: m.model });
+    }
+  }
+
+  if (targets.length === 0) {
+    err({
+      error: "no scannable (provider, model) pairs",
+      detail:
+        "either no provider in the policy is effectively enabled, or your --provider/--model filters matched nothing",
+      hint: "frontier model list",
+    });
+    return;
+  }
+
+  const records: ModelCapacityRecord[] = [];
+  for (const t of targets) {
+    let provider: InstanceType<typeof OpenAICompatibleProvider>;
+    if (t.provider === "nvidia-nim") {
+      provider = new NvidiaNIMProvider();
+    } else {
+      const baseUrl = registry.resolveBaseUrl(t.provider);
+      if (!baseUrl) {
+        err({ error: `provider ${t.provider} has no baseUrl resolved` });
+        return;
+      }
+      const apiKey = registry.resolveApiKey(t.provider);
+      const config: { baseUrl: string; apiKey?: string } = { baseUrl };
+      if (apiKey) config.apiKey = apiKey;
+      provider = new OpenAICompatibleProvider(t.provider, config);
+    }
+    const record = await probeModelCapacity({
+      provider,
+      model: t.model,
+      budgetCalls,
+      latencySamples,
+      rateLimitTargetFraction: registry.defaults().rateLimitTargetFraction,
+    });
+    records.push(record);
+  }
+
+  if (!dryRun) {
+    let file = loadCapacityFile(outputPath);
+    for (const r of records) {
+      file = mergeCapacityRecord(file, r);
+    }
+    file.scanner = {
+      rateLimitTargetFraction: registry.defaults().rateLimitTargetFraction,
+      budgetCallsPerModel: budgetCalls,
+      latencySamples,
+    };
+    saveCapacityFile(outputPath, file);
+  }
+
+  out(
+    {
+      scannedAt: new Date().toISOString(),
+      outputPath: dryRun ? null : outputPath,
+      dryRun,
+      modelsScanned: records.length,
+      models: records.map((r) => ({
+        modelKey: r.modelKey,
+        available: r.available,
+        latencyP50Ms: r.latency?.p50Ms ?? null,
+        latencyP95Ms: r.latency?.p95Ms ?? null,
+        observedSafeRpm: r.rateLimit?.observedSafeRpm ?? null,
+        recommendedBucketRpm: r.rateLimit?.recommendedBucketRpm ?? null,
+        ceilingFound: r.rateLimit?.ceilingFound ?? null,
+        budgetExhausted: r.rateLimit?.budgetExhausted ?? null,
+        errors: r.errors.length,
+      })),
+    },
+    pretty,
+  );
+}
+
 async function cmdModelCall(args: ParsedArgs, pretty: boolean): Promise<void> {
   const taskClass =
     typeof args.flags.class === "string" ? args.flags.class : "";
@@ -4060,12 +4187,14 @@ async function main(): Promise<void> {
         return cmdModelList(args, pretty);
       case "probe":
         return cmdModelProbe(args, pretty);
+      case "capacity-scan":
+        return cmdModelCapacityScan(args, pretty);
       case "call":
         return cmdModelCall(args, pretty);
       default:
         return err({
           error: `unknown model subcommand: ${args.subcommand ?? "(none)"}`,
-          expected: ["list", "probe", "call"],
+          expected: ["list", "probe", "capacity-scan", "call"],
         });
     }
   }

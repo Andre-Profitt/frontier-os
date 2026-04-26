@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/model-capacity.schema.json",
+  "title": "FrontierOS Model Capacity Snapshot",
+  "description": "Empirical capacity snapshot for inference broker model selection. Written by `frontier model capacity-scan`. Read by the broker to seed token-bucket rate limits at observedSafeRpm * rateLimitTargetFraction. One file per environment; each entry keyed by `<provider>:<model>`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "scannedAt", "models"],
+  "properties": {
+    "version": { "const": "v1" },
+    "scannedAt": { "type": "string", "format": "date-time" },
+    "scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rateLimitTargetFraction": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "budgetCallsPerModel": { "type": "integer", "minimum": 1 },
+        "latencySamples": { "type": "integer", "minimum": 1 },
+        "rampSequence": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        }
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/modelCapacity" }
+    }
+  },
+  "$defs": {
+    "modelCapacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modelKey", "provider", "model", "scannedAt", "available"],
+      "properties": {
+        "modelKey": { "type": "string", "pattern": "^[^:]+:.+$" },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "scannedAt": { "type": "string", "format": "date-time" },
+        "available": { "type": "boolean" },
+        "latency": { "$ref": "#/$defs/latencyStats" },
+        "rateLimit": { "$ref": "#/$defs/rateLimitProbe" },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/probeError" }
+        }
+      }
+    },
+    "latencyStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples", "okSamples", "p50Ms", "p95Ms", "minMs", "maxMs", "meanMs"],
+      "properties": {
+        "samples": { "type": "integer", "minimum": 0 },
+        "okSamples": { "type": "integer", "minimum": 0 },
+        "p50Ms": { "type": "number", "minimum": 0 },
+        "p95Ms": { "type": "number", "minimum": 0 },
+        "p99Ms": { "type": "number", "minimum": 0 },
+        "minMs": { "type": "number", "minimum": 0 },
+        "maxMs": { "type": "number", "minimum": 0 },
+        "meanMs": { "type": "number", "minimum": 0 }
+      }
+    },
+    "rateLimitProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "observedSafeRpm",
+        "recommendedBucketRpm",
+        "rateLimitTargetFraction"
+      ],
+      "properties": {
+        "method": { "enum": ["burst-ramp", "skipped"] },
+        "observedSafeRpm": { "type": "integer", "minimum": 0 },
+        "observed429RateAtCeiling": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "recommendedBucketRpm": { "type": "integer", "minimum": 0 },
+        "rateLimitTargetFraction": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "ceilingFound": { "type": "boolean" },
+        "budgetExhausted": { "type": "boolean" },
+        "rampSequence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rampWave" }
+        },
+        "skippedReason": { "type": "string" }
+      }
+    },
+    "rampWave": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetRpm",
+        "actualCalls",
+        "ok",
+        "errors429",
+        "errorsOther",
+        "elapsedMs"
+      ],
+      "properties": {
+        "targetRpm": { "type": "integer", "minimum": 1 },
+        "actualCalls": { "type": "integer", "minimum": 0 },
+        "ok": { "type": "integer", "minimum": 0 },
+        "errors429": { "type": "integer", "minimum": 0 },
+        "errorsOther": { "type": "integer", "minimum": 0 },
+        "elapsedMs": { "type": "integer", "minimum": 0 },
+        "err429Rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "probeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "status", "message"],
+      "properties": {
+        "phase": { "enum": ["latency", "ramp"] },
+        "status": { "type": "integer" },
+        "message": { "type": "string" },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
