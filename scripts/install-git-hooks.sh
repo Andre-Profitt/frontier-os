@@ -38,10 +38,13 @@ if [[ ! -d "$HOOKS_DIR" ]]; then
   exit 1
 fi
 
-# Ensure the hooks are executable (in case clone didn't preserve perms).
-for h in "$HOOKS_DIR"/*; do
-  if [[ -f "$h" ]]; then
-    chmod +x "$h"
+# Ensure known hook scripts are executable (in case clone didn't preserve
+# perms). Only chmod files that are actual git hooks — README and other
+# non-hook artifacts in this directory should NOT be marked +x.
+HOOK_FILES=(commit-msg)
+for h in "${HOOK_FILES[@]}"; do
+  if [[ -f "$HOOKS_DIR/$h" ]]; then
+    chmod +x "$HOOKS_DIR/$h"
   fi
 done
 

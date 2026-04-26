@@ -24,15 +24,16 @@ Scope: Phase 3 eval suite for local-smoke factory quality
 Verification: npm run typecheck; node --import tsx --test evals/factory-quality/tests/quality.test.ts
 ```
 
-### Bypass paths
+### Bypass paths (visible only)
 
-| When                              | How                                                 |
-| --------------------------------- | --------------------------------------------------- |
-| Human / emergency commit          | prefix subject with `[no-guard]`                    |
-| Scripted / out-of-band            | `FRONTIER_HUMAN=1 git commit ...`                   |
-| Merge commit                      | exempt automatically (subject starts with `Merge `) |
-| Revert                            | exempt (subject starts with `Revert `)              |
-| `git commit --fixup` / `--squash` | exempt (subject starts with `fixup! ` / `squash! `) |
+Auditability requires that every bypass leave a marker in commit history. There is **no env-var bypass**. The only ways to land a commit without the three audit fields are:
+
+| When                     | How                                                                       |
+| ------------------------ | ------------------------------------------------------------------------- |
+| Human / emergency commit | prefix subject with `[no-guard]` — visible in `git log`                   |
+| Merge commit             | exempt automatically (subject starts with `Merge `) — Git generates these |
+
+Revert / `fixup!` / `squash!` / `amend!` commits are **NOT** auto-exempt. They are still authored commits and can land on `main` in a fast-forward workflow, so they must include the three fields or use the visible `[no-guard]` prefix.
 
 ### Behavior summary
 

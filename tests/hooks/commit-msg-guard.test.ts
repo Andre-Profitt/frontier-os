@@ -177,7 +177,7 @@ Verification:
   assert.match(r.stderr, /Verification/);
 });
 
-// --- bypass paths ---------------------------------------------------------
+// --- bypass paths (visible only) ------------------------------------------
 
 test("bypass: subject prefix [no-guard] is exempt", () => {
   const msg = `[no-guard] quick human fix
@@ -188,10 +188,13 @@ no audit fields needed
   assert.equal(r.status, 0, r.stderr);
 });
 
-test("bypass: FRONTIER_HUMAN=1 env is exempt", () => {
+test("no env bypass: FRONTIER_HUMAN=1 does NOT exempt (auditability requires visible markers)", () => {
+  // Regression test for the PR #4 v1 invisible bypass. Setting the env var
+  // must not let a missing-fields commit through; the only acceptable
+  // bypasses are visible in commit history.
   const msg = `feat: x without audit fields\n`;
   const r = runHook(msg, { FRONTIER_HUMAN: "1" });
-  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.status, 1);
 });
 
 // --- exempt paths (git-generated) -----------------------------------------
@@ -202,20 +205,70 @@ test("exempt: merge commit subject (Git generates these)", () => {
   assert.equal(r.status, 0, r.stderr);
 });
 
-test("exempt: revert commit subject", () => {
+// --- authored commits that USED to be auto-exempt are now guarded ---------
+
+test("rejects: Revert commit without audit fields (no longer auto-exempt)", () => {
   const msg = `Revert "feat: bad change"
 
 This reverts commit abc123.
 `;
   const r = runHook(msg);
-  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /missing required field\(s\):/);
 });
 
-test("exempt: fixup! and squash! prefixes", () => {
-  const fixup = runHook(`fixup! feat: original commit\n`);
-  assert.equal(fixup.status, 0, fixup.stderr);
-  const squash = runHook(`squash! feat: original commit\n`);
-  assert.equal(squash.status, 0, squash.stderr);
+test("rejects: fixup! commit without audit fields (no longer auto-exempt)", () => {
+  const r = runHook(`fixup! feat: original commit\n`);
+  assert.equal(r.status, 1);
+});
+
+test("rejects: squash! commit without audit fields (no longer auto-exempt)", () => {
+  const r = runHook(`squash! feat: original commit\n`);
+  assert.equal(r.status, 1);
+});
+
+test("rejects: amend! commit without audit fields (no longer auto-exempt)", () => {
+  const r = runHook(`amend! feat: original commit\n`);
+  assert.equal(r.status, 1);
+});
+
+test("accepts: Revert / fixup! / squash! / amend! when body includes the three audit fields", () => {
+  const cases = [
+    `Revert "feat: bad change"
+
+This reverts commit abc123.
+
+Session: claude-x
+Scope: revert PR #99
+Verification: ran tests after revert
+`,
+    `fixup! feat: original commit
+
+Session: claude-x
+Scope: fix typo in PR #99
+Verification: re-ran the affected tests
+`,
+    `squash! feat: original commit
+
+Session: claude-x
+Scope: squash follow-up into PR #99
+Verification: tests still pass after squash
+`,
+    `amend! feat: original commit
+
+Session: claude-x
+Scope: clarify commit message in PR #99
+Verification: build still passes
+`,
+  ];
+  for (const msg of cases) {
+    const r = runHook(msg);
+    assert.equal(
+      r.status,
+      0,
+      `expected accept for ${msg.split("\n")[0]}; stderr=${r.stderr}`,
+    );
+  }
 });
 
 // --- error case: missing/invalid input file -------------------------------
@@ -233,14 +286,15 @@ test("error: nonexistent message file", () => {
 
 // --- error message quality -------------------------------------------------
 
-test("error message includes the required template and bypass docs", () => {
+test("error message includes the required template and visible-only bypass docs", () => {
   const r = runHook(`feat: x without anything\n`);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Session: <agent session id>/);
   assert.match(r.stderr, /Scope: <what this commit covers>/);
   assert.match(r.stderr, /Verification: <exact commands run>/);
   assert.match(r.stderr, /\[no-guard\]/);
-  assert.match(r.stderr, /FRONTIER_HUMAN=1/);
+  // The error message MUST NOT advertise the removed env-var bypass.
+  assert.doesNotMatch(r.stderr, /FRONTIER_HUMAN/);
 });
 
 // --- regression: case sensitivity (only canonical labels accepted) --------

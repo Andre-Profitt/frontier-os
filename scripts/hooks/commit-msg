@@ -8,12 +8,18 @@
 #   Scope: <what this commit covers>
 #   Verification: <exact commands run>
 #
-# Bypass for human / emergency commits:
-#   - prefix the commit subject with `[no-guard]`
-#   - OR set FRONTIER_HUMAN=1 in the environment
+# Bypass surface (visible only — auditability requires that any bypass leave
+# a marker in the commit history):
 #
-# Merge commits and revert commits are exempt by default (Git generates
-# their messages).
+#   - prefix the commit subject with `[no-guard]` for explicit human /
+#     emergency override
+#   - merge commits (subject begins with `Merge `) are exempt because Git
+#     generates the message; the merged branch commits should already
+#     carry audit metadata
+#
+# NO env-var bypass exists. Revert / fixup! / squash! / amend! commits are
+# NOT auto-exempt — they are still authored commits and must include the
+# three fields, or use the visible `[no-guard]` prefix.
 #
 # Exit codes:
 #   0  message accepted
@@ -27,37 +33,26 @@ if [[ -z "$MSG_FILE" || ! -f "$MSG_FILE" ]]; then
   exit 1
 fi
 
-# Bypass via env
-if [[ "${FRONTIER_HUMAN:-0}" == "1" ]]; then
-  exit 0
-fi
-
-# Strip git-comment lines (those starting with #) and trailing whitespace
-# from the message before inspecting. Use a temp variable to avoid relying
-# on bash >=4 readarray availability.
+# Strip git-comment lines (those starting with #) before inspecting. Use a
+# temp variable to avoid relying on bash >=4 readarray availability.
 MSG_BODY="$(sed -e '/^#/d' "$MSG_FILE")"
 
-# Bypass via subject prefix
+# Visible bypass via subject prefix.
 SUBJECT="$(printf '%s' "$MSG_BODY" | sed -n '1p')"
 if [[ "$SUBJECT" == \[no-guard\]* ]]; then
   exit 0
 fi
 
-# Exempt merge / revert / fixup / squash commits — Git generates these.
-if [[ "$SUBJECT" =~ ^Merge\  ]] \
-   || [[ "$SUBJECT" =~ ^Revert\  ]] \
-   || [[ "$SUBJECT" =~ ^fixup!\  ]] \
-   || [[ "$SUBJECT" =~ ^squash!\  ]] \
-   || [[ "$SUBJECT" =~ ^amend!\  ]]; then
+# Auto-exempt only Git-generated merge messages.
+if [[ "$SUBJECT" =~ ^Merge\  ]]; then
   exit 0
 fi
 
 # Validate each required field has a non-empty value.
-# Match `^Field:\s+<at least one non-space character>` line-anchored.
+# Match `^Field:\s*<at least one non-space character>` line-anchored,
+# case-sensitive.
 require_field() {
   local field="$1"
-  # Case-sensitive match. Whitespace after the colon is optional but at
-  # least one non-whitespace character must follow before EOL.
   if ! printf '%s\n' "$MSG_BODY" | grep -Eq "^${field}:[[:space:]]*[^[:space:]]+"; then
     return 1
   fi
@@ -89,10 +84,12 @@ Example:
   Scope: Phase 3 eval suite for local-smoke factory quality
   Verification: npm run typecheck; node --import tsx --test evals/factory-quality/tests/quality.test.ts
 
-Bypass:
+Bypass (visible only):
   - prefix subject with [no-guard]
-  - OR set FRONTIER_HUMAN=1 in the environment
-  - merge / revert / fixup! / squash! / amend! commits are exempt by default
+  - merge commits (subject begins with "Merge ") are exempt automatically
+
+Revert / fixup! / squash! / amend! commits are NOT auto-exempt — they
+must include the three fields, or use the [no-guard] prefix.
 
 Re-stage your changes after amending the message and try again.
 EOF
