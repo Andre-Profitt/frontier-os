@@ -1,0 +1,18 @@
+{
+  "schema": "frontier_os.research.claim_record.v1",
+  "claimId": "claim_20260426T210000Z_a1b2",
+  "text": "PaperQA2 is engineered for high-accuracy retrieval over scientific papers and exposes citation-graph traversal as a first-class operation.",
+  "status": "supported",
+  "confidence": "medium",
+  "support": [
+    {
+      "sourceId": "src_20260426T205500Z_p3q4",
+      "quoteOrSummary": "PaperQA2 is described as a research agent for retrieving and summarizing scientific literature with citation-graph tools.",
+      "stance": "supports",
+      "confidence": "medium"
+    }
+  ],
+  "usedFor": ["research-factory.tool-selection"],
+  "createdAt": "2026-04-26T21:00:00Z",
+  "tags": ["paperqa2", "rag", "scientific-literature"]
+}

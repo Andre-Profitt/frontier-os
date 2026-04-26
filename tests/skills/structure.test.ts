@@ -198,6 +198,7 @@ test("v1 skill set is present", () => {
     "factory-activation",
     "context-pack",
     "pr-review-packet",
+    "research-factory",
   ];
   const actual = listSkillFiles().map((s) => s.id);
   for (const name of expected) {
