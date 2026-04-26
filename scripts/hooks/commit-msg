@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# commit-msg — Phase 4 agent commit guard.
+#
+# Enforces that agent-authored commits include three audit fields in the
+# commit message body:
+#
+#   Session: <agent session id>
+#   Scope: <what this commit covers>
+#   Verification: <exact commands run>
+#
+# Bypass for human / emergency commits:
+#   - prefix the commit subject with `[no-guard]`
+#   - OR set FRONTIER_HUMAN=1 in the environment
+#
+# Merge commits and revert commits are exempt by default (Git generates
+# their messages).
+#
+# Exit codes:
+#   0  message accepted
+#   1  message rejected (missing required fields)
+
+set -euo pipefail
+
+MSG_FILE="${1:-}"
+if [[ -z "$MSG_FILE" || ! -f "$MSG_FILE" ]]; then
+  echo "commit-msg guard: no message file provided" >&2
+  exit 1
+fi
+
+# Bypass via env
+if [[ "${FRONTIER_HUMAN:-0}" == "1" ]]; then
+  exit 0
+fi
+
+# Strip git-comment lines (those starting with #) and trailing whitespace
+# from the message before inspecting. Use a temp variable to avoid relying
+# on bash >=4 readarray availability.
+MSG_BODY="$(sed -e '/^#/d' "$MSG_FILE")"
+
+# Bypass via subject prefix
+SUBJECT="$(printf '%s' "$MSG_BODY" | sed -n '1p')"
+if [[ "$SUBJECT" == \[no-guard\]* ]]; then
+  exit 0
+fi
+
+# Exempt merge / revert / fixup / squash commits — Git generates these.
+if [[ "$SUBJECT" =~ ^Merge\  ]] \
+   || [[ "$SUBJECT" =~ ^Revert\  ]] \
+   || [[ "$SUBJECT" =~ ^fixup!\  ]] \
+   || [[ "$SUBJECT" =~ ^squash!\  ]] \
+   || [[ "$SUBJECT" =~ ^amend!\  ]]; then
+  exit 0
+fi
+
+# Validate each required field has a non-empty value.
+# Match `^Field:\s+<at least one non-space character>` line-anchored.
+require_field() {
+  local field="$1"
+  # Case-sensitive match. Whitespace after the colon is optional but at
+  # least one non-whitespace character must follow before EOL.
+  if ! printf '%s\n' "$MSG_BODY" | grep -Eq "^${field}:[[:space:]]*[^[:space:]]+"; then
+    return 1
+  fi
+  return 0
+}
+
+MISSING=()
+for field in Session Scope Verification; do
+  if ! require_field "$field"; then
+    MISSING+=("$field")
+  fi
+done
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  cat >&2 <<EOF
+commit-msg guard: rejected — missing required field(s): ${MISSING[*]}
+
+Agent commits must include the three audit lines in the message body:
+
+  Session: <agent session id>
+  Scope: <what this commit covers>
+  Verification: <exact commands run>
+
+Example:
+
+  feat(eval): add factory quality eval suite
+
+  Session: claude-factory-quality-eval-2026-04-26
+  Scope: Phase 3 eval suite for local-smoke factory quality
+  Verification: npm run typecheck; node --import tsx --test evals/factory-quality/tests/quality.test.ts
+
+Bypass:
+  - prefix subject with [no-guard]
+  - OR set FRONTIER_HUMAN=1 in the environment
+  - merge / revert / fixup! / squash! / amend! commits are exempt by default
+
+Re-stage your changes after amending the message and try again.
+EOF
+  exit 1
+fi
+
+exit 0
