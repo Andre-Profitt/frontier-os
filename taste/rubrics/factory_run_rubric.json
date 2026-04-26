@@ -1,0 +1,81 @@
+{
+  "rubricId": "factory_run",
+  "version": "v1",
+  "summary": "Criteria a factory cell run should satisfy to count as 'good' work in this repo. Concrete-first: this rubric is calibrated against the ai-stack-local-smoke factory and the workflow GPT Pro reviewed across PRs #1-#3.",
+  "criteria": [
+    {
+      "id": "R1",
+      "title": "Wraps the actual lane, not a proxy",
+      "rationale": "A factory must run the real script that launchd schedules, not just an inner tool. PR #1 v1 was rejected for wrapping `frontier mcp smoke --read-only` while claiming to wrap `ai-stack.local-smoke-nightly`. The primary verifier is the lane script; inner checks are supplementary.",
+      "weight": 2
+    },
+    {
+      "id": "R2",
+      "title": "Final classification is a single source of truth",
+      "rationale": "Pass / fail / ambiguous must be derived in one place from primary status + repair status + kill switch + escalations. Side effects (alerts, ledger payloads, exit codes) read from the final classification, never from the raw primary. PR #1 v1 leaked a false-green when stale repair coexisted with primary=ok.",
+      "weight": 2
+    },
+    {
+      "id": "R3",
+      "title": "Classification is mutually exclusive and total",
+      "rationale": "Every outcome lands in exactly one of {passed, failed, ambiguous}. The space is enumerated and tested. No outcome can be both passed and ambiguous; no outcome is unclassified.",
+      "weight": 1
+    },
+    {
+      "id": "R4",
+      "title": "passed implies invariants",
+      "rationale": "classification == 'passed' MUST imply: kill switch inactive, primary ok, repair ok, escalations empty. Asserted by an enumeration test over the full state space. The 'no false green' guarantee is the load-bearing property of the factory.",
+      "weight": 2
+    },
+    {
+      "id": "R5",
+      "title": "Bounded repair is non-destructive by default",
+      "rationale": "Repairs verify state, they don't auto-fix. Stale config produces an escalation, not a silent edit. If a repair MUST be destructive, it requires explicit policy + rollback + approval; this is documented in the spec, not implicit.",
+      "weight": 1
+    },
+    {
+      "id": "R6",
+      "title": "Kill switch is observable and load-bearing",
+      "rationale": "The kill-switch path is in the spec, the active flag is surfaced in any context, and the short-circuit happens before any verifier / inner / repair / ledger / alert side effect. A flipped kill switch terminates the run with classification=ambiguous and zero side effects.",
+      "weight": 2
+    },
+    {
+      "id": "R7",
+      "title": "Run-ledger entries are written for non-killed runs",
+      "rationale": "Every active run opens a session and writes (system: factory.run_start) → (ops.repair_start) → (ops.repair_end with classification + escalations + repair status) → optional (alert) → (system: factory.run_end). This is the audit trail; nothing else writes to the ledger from the factory.",
+      "weight": 1
+    },
+    {
+      "id": "R8",
+      "title": "Alert severity reflects FINAL classification",
+      "rationale": "Mapping is in the spec under alert.severityByFinalClassification. passed → no alert. failed → high. ambiguous → medium. Notify-alerts.sh picks these up directly via the existing ledger query — no new alert plumbing needed.",
+      "weight": 1
+    },
+    {
+      "id": "R9",
+      "title": "Evidence is captured before any repair attempt",
+      "rationale": "Failure logs, alert IDs, git state, smoke output get committed to evidence/ at the start of work. The bounded repair runs against this captured state. Repairs without prior evidence are blind.",
+      "weight": 1
+    },
+    {
+      "id": "R10",
+      "title": "External integration surfaces are read-only from the factory",
+      "rationale": "The factory does not edit /Users/test/bin scripts, launchd plists, or other repo cells. It reads them via spec, treats them as documented surfaces, and escalates if they're stale. Any modification to those surfaces is a separate, explicit operation outside the factory.",
+      "weight": 2
+    }
+  ],
+  "non_goals": [
+    "Generic FactoryRunner abstraction — concrete-first; do not generalize until a second factory exists.",
+    "Self-grading: the factory's own tests are written by the same agent that wrote the implementation; independent eval suites + reviews are how this rubric gets enforced, not unit tests alone.",
+    "Performance benchmarking — factory cells are observability + bounded repair, not throughput-critical.",
+    "Multi-tenancy / multi-lane support in a single cell.",
+    "CI / scheduling concerns — those belong to launchd or to a higher orchestration layer."
+  ],
+  "calibration": {
+    "exemplar": "factories/ai-stack-local-smoke/ — passes 15/15 criteria in evals/factory-quality/run.ts as of HEAD",
+    "anti_examples": [
+      "taste/anti_examples/false_green_repair.md (PR #1 v1)",
+      "taste/anti_examples/narrow_alert_filter.md (PR #2 v1)"
+    ]
+  }
+}

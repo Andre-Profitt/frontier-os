@@ -1,0 +1,80 @@
+{
+  "rubricId": "handoff",
+  "version": "v1",
+  "summary": "Criteria a handoff or review packet should satisfy in this repo. Calibrated against the PR #1 / #2 / #3 / #4 review packets that GPT Pro accepted, and against the prior-session handoff that hallucinated context (see anti_examples/wrong_repo_hallucination.md).",
+  "criteria": [
+    {
+      "id": "H1",
+      "title": "Repo identity is the first claim",
+      "rationale": "A handoff that does not name the repo invites the next agent to import context from a different repo. The packet must state explicitly: 'This is the frontier-os repo, do not import context from ai-os, Siri, or companion-platform.' The marker shows up at the top, not buried.",
+      "weight": 2
+    },
+    {
+      "id": "H2",
+      "title": "Working tree state is reported, not assumed",
+      "rationale": "Dirty trees are surfaced verbatim with the porcelain output. A clean working tree is asserted with evidence. Assumptions like 'main is coherent' are not acceptable substitutes for `git status --short`.",
+      "weight": 1
+    },
+    {
+      "id": "H3",
+      "title": "Verification commands and exact outputs are present",
+      "rationale": "Claims like '17 tests pass' need the exact command and the exact pass-count output, not a paraphrase. A reviewer must be able to re-run any claim. PR review packets in this repo template this with explicit `$ <command>` blocks.",
+      "weight": 2
+    },
+    {
+      "id": "H4",
+      "title": "Risk notes call out non-obvious side effects",
+      "rationale": "Anything the agent wrote outside the obviously-touched files, any process running on the system, any external surface inspected — name it. Example items: 'no external files in /Users/test/bin touched', 'ledger row count unchanged before/after', 'kill-switch state directory empty'.",
+      "weight": 1
+    },
+    {
+      "id": "H5",
+      "title": "Decisions a reviewer must accept-or-reject are listed explicitly",
+      "rationale": "Format: 'Accept these N decisions to merge: (a) ..., (b) ..., (c) ...; reject any of them and a fixup is needed.' The reviewer should not have to infer what the explicit choices were. Past examples: JSON-vs-YAML spec format, read-only repair design, ledger-event-kind reuse.",
+      "weight": 1
+    },
+    {
+      "id": "H6",
+      "title": "Remaining ambiguity has its own section",
+      "rationale": "Things that aren't done, things that are deliberate trade-offs, things that need follow-up. Naming them prevents the next agent from re-litigating them blindly. Phase 4's commit message dogfooding and the no-subprocess-timeout follow-up are recurring examples.",
+      "weight": 1
+    },
+    {
+      "id": "H7",
+      "title": "The packet states what was NOT done",
+      "rationale": "Out-of-scope items are listed by name. 'Not in this PR: server-side hook, CI lint, prepare-commit-msg helper, Phase 5 taste rubrics.' This protects scope and shows the agent understood the boundary.",
+      "weight": 1
+    },
+    {
+      "id": "H8",
+      "title": "Diffs are full and referenced, not summarized",
+      "rationale": "The packet includes the unified diff (or a path to it) and a stat line. Reviewers can ask for any specific file's full contents from the packet without needing repo access. Critical for private repos where reviewers cannot pull.",
+      "weight": 1
+    },
+    {
+      "id": "H9",
+      "title": "Anti-examples are encoded, not just narrated",
+      "rationale": "When a previous PR was rejected for a specific failure mode, the eval suite or test suite must include a case that catches that mode. The handoff packet cites it. Examples in this repo: PR #1 v1's wrong-layer bug → eval criterion C8; PR #2 v1's narrow alert filter → eval criterion C9 + assertLegacyAndFactoryCoverage helper.",
+      "weight": 2
+    },
+    {
+      "id": "H10",
+      "title": "Length is calibrated to scope, not to look thorough",
+      "rationale": "Small PRs get small packets. The Phase 1 packet was ~95KB because PR #1 had 1000+ LOC of new code; the Phase 4 packet was ~38KB because PR #4 had 470 LOC. Padding a small PR's packet to look comprehensive wastes reviewer time and obscures real signal.",
+      "weight": 1
+    }
+  ],
+  "non_goals": [
+    "Marketing prose: handoffs are not announcements.",
+    "Speculation about future PRs: the packet covers THIS PR's state.",
+    "Self-congratulation: pass-counts and exact outputs are evidence; adjectives are not.",
+    "Hidden bypasses: 'I just merged because it looked OK' is the failure mode the rubric exists to prevent."
+  ],
+  "calibration": {
+    "exemplars": [
+      "/tmp/frontier-os-pr3-eval-suite-review-packet-v2.md (PR #3 v2 packet — accepted, merged)",
+      "/tmp/frontier-os-pr4-commit-msg-guard-review-packet-v2.md (PR #4 v2 packet)"
+    ],
+    "anti_examples": ["taste/anti_examples/wrong_repo_hallucination.md"]
+  }
+}
