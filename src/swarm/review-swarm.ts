@@ -70,6 +70,17 @@ export interface ReviewPacket {
   taskClass: string;
   diffSource: DiffSource;
   reviewerCount: number;
+  // Reviewers whose JSON deliverable parsed cleanly into a ReviewerOutput.
+  validReviewerCount: number;
+  // Reviewers that returned ok=true but text was unparseable; rawText kept.
+  invalidReviewerCount: number;
+  // Reviewers where the broker call itself failed (rejection or exception).
+  failedReviewerCount: number;
+  // validReviewerCount / reviewerCount. Arbiter MUST gate on this before
+  // treating an empty findings list as 'reviewClean' — otherwise every
+  // reviewer returning unparseable text aggregates to totalFindings=0
+  // (false clean). See GPT Pro review Issue #2.
+  reviewCoverage: number;
   modelsUsed: string[];
   reviewers: ReviewerRun[];
   totalFindings: number;
@@ -218,8 +229,22 @@ export async function runReviewSwarm(
   };
   const findingsByCategory: Record<string, number> = {};
   let totalFindings = 0;
+  let validReviewerCount = 0;
+  let invalidReviewerCount = 0;
+  let failedReviewerCount = 0;
   for (const r of reviewers) {
-    if (!r.output) continue;
+    if (!r.ok) {
+      failedReviewerCount += 1;
+      continue;
+    }
+    // ok=true with output=null means broker call succeeded but the text
+    // could not be parsed as a ReviewerOutput. The arbiter must NOT treat
+    // this as "reviewer found nothing" — it's "reviewer didn't review."
+    if (!r.output) {
+      invalidReviewerCount += 1;
+      continue;
+    }
+    validReviewerCount += 1;
     for (const f of r.output.findings) {
       totalFindings += 1;
       findingsBySeverity[f.severity] =
@@ -228,6 +253,8 @@ export async function runReviewSwarm(
         (findingsByCategory[f.category] ?? 0) + 1;
     }
   }
+  const reviewCoverage =
+    reviewerCount > 0 ? validReviewerCount / reviewerCount : 0;
 
   return {
     packetId,
@@ -235,6 +262,10 @@ export async function runReviewSwarm(
     taskClass,
     diffSource: input.diffSource,
     reviewerCount,
+    validReviewerCount,
+    invalidReviewerCount,
+    failedReviewerCount,
+    reviewCoverage,
     modelsUsed,
     reviewers,
     totalFindings,

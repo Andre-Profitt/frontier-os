@@ -11,6 +11,10 @@
     "taskClass",
     "diffSource",
     "reviewerCount",
+    "validReviewerCount",
+    "invalidReviewerCount",
+    "failedReviewerCount",
+    "reviewCoverage",
     "reviewers",
     "totalFindings",
     "findingsBySeverity",
@@ -34,6 +38,27 @@
       }
     },
     "reviewerCount": { "type": "integer", "minimum": 1 },
+    "validReviewerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reviewers whose JSON deliverable parsed cleanly into a ReviewerOutput."
+    },
+    "invalidReviewerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reviewers that returned ok=true (broker call succeeded) but the text could not be parsed as a ReviewerOutput. rawText is preserved on the reviewer record."
+    },
+    "failedReviewerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reviewers where the broker call itself failed (rejection or exception)."
+    },
+    "reviewCoverage": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "validReviewerCount / reviewerCount. The arbiter MUST require this is above a floor before treating an empty findings list as 'reviewClean' — otherwise every reviewer returning unparseable text aggregates to totalFindings=0 (false clean)."
+    },
     "modelsUsed": {
       "type": "array",
       "items": { "type": "string" },

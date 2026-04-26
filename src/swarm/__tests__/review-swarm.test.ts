@@ -319,6 +319,97 @@ test("runReviewSwarm: missing skill for taskClass throws ReviewSwarmError", asyn
   );
 });
 
+// --- coverage fields (Patch B / GPT Pro Issue #2) ------------------------
+
+test("runReviewSwarm: all reviewers return parseable JSON → reviewCoverage=1.0, validReviewerCount=N", async () => {
+  const broker = new StubBroker();
+  for (let i = 0; i < 3; i++) {
+    broker.enqueue({ ok: true, assistantText: deliverable(1) });
+  }
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 3,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  assert.equal(packet.validReviewerCount, 3);
+  assert.equal(packet.invalidReviewerCount, 0);
+  assert.equal(packet.failedReviewerCount, 0);
+  assert.equal(packet.reviewCoverage, 1);
+});
+
+test("runReviewSwarm: all reviewers return non-JSON → reviewCoverage=0, totalFindings=0 — must NOT look 'clean'", async () => {
+  // The whole point of GPT Pro Issue #2: an arbiter reading totalFindings=0
+  // from this packet without consulting reviewCoverage would falsely
+  // conclude "no findings" when the truth is "no reviewer actually reviewed."
+  const broker = new StubBroker();
+  for (let i = 0; i < 3; i++) {
+    broker.enqueue({ ok: true, assistantText: "I have no thoughts." });
+  }
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 3,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  assert.equal(packet.validReviewerCount, 0);
+  assert.equal(packet.invalidReviewerCount, 3);
+  assert.equal(packet.failedReviewerCount, 0);
+  assert.equal(packet.reviewCoverage, 0);
+  assert.equal(packet.totalFindings, 0); // looks clean — but coverage is 0
+});
+
+test("runReviewSwarm: broker rejection counts toward failedReviewerCount, not invalidReviewerCount", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(1) });
+  broker.enqueue(); // empty queue → ok=false (broker rejection)
+  broker.enqueue({ ok: true, assistantText: "unparseable" });
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 3,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  assert.equal(packet.validReviewerCount, 1);
+  assert.equal(packet.invalidReviewerCount, 1);
+  assert.equal(packet.failedReviewerCount, 1);
+  assert.ok(Math.abs(packet.reviewCoverage - 1 / 3) < 1e-6);
+});
+
+test("runReviewSwarm: packet validates against review-packet.schema.json (with coverage fields)", async () => {
+  const { validateReviewPacket } = await import("../../schemas.ts");
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(2) });
+  broker.enqueue({ ok: true, assistantText: "garbage" });
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline", sizeBytes: 4 },
+      reviewerCount: 2,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  const valid = validateReviewPacket(packet);
+  if (!valid) {
+    console.error(JSON.stringify(validateReviewPacket.errors, null, 2));
+  }
+  assert.equal(valid, true);
+});
+
 test("runReviewSwarm: aggregates findingsBySeverity and findingsByCategory", async () => {
   const broker = new StubBroker();
   // Custom payload — 1 high-bug, 1 low-style, 1 medium-risk.
