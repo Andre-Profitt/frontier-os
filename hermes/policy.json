@@ -1,0 +1,104 @@
+{
+  "$schema": "https://frontier-os.local/schemas/hermes-policy.v1.json",
+  "version": "v1",
+  "description": "Capability policy for the Hermes ↔ frontier-os operator bridge. Hermes (or any external operator surface) is allowed to invoke frontier-os via these wrapper scripts ONLY. Mutating verbs are gated and require explicit operator approval through the chat surface; the wrapper refuses unless the caller passes a fresh approval token.",
+  "allowed": [
+    {
+      "verb": "factory.status",
+      "wrapper": "scripts/hermes/frontier-status.sh",
+      "underlying": "frontier factory status",
+      "mutating": false,
+      "gated": false,
+      "rationale": "Read-only by contract — assesses lock + latest-run + kill-switch and returns a status code."
+    },
+    {
+      "verb": "factory.reconcile.shadow",
+      "wrapper": "scripts/hermes/frontier-reconcile.sh",
+      "underlying": "frontier factory reconcile --mode shadow",
+      "mutating": true,
+      "gated": false,
+      "rationale": "Shadow runs DO write latest-run + lease + ledger entries, but never emit factory alerts and never touch launchd. Safe-by-default for operator chat."
+    },
+    {
+      "verb": "factory.reconcile.observe",
+      "wrapper": "scripts/hermes/frontier-reconcile.sh",
+      "underlying": "frontier factory reconcile --mode observe",
+      "mutating": false,
+      "gated": false,
+      "rationale": "Observe mode runs no primary or repair (reconciler invariant I13)."
+    },
+    {
+      "verb": "context.pack",
+      "wrapper": "scripts/hermes/frontier-context-pack.sh",
+      "underlying": "frontier context pack",
+      "mutating": false,
+      "gated": false,
+      "rationale": "Read-only snapshot. Writes nothing."
+    },
+    {
+      "verb": "factory.review-packet",
+      "wrapper": "scripts/hermes/frontier-review-packet.sh",
+      "underlying": "git diff + node --test + frontier factory reconcile --mode shadow",
+      "mutating": true,
+      "gated": false,
+      "rationale": "Aggregates evidence for a PR review. May trigger a shadow reconcile (already safe). Never pushes branches or comments on PRs."
+    },
+    {
+      "verb": "factory.activation.dry-run",
+      "wrapper": "scripts/hermes/frontier-activation-dry-run.sh",
+      "underlying": "scripts/install-local-smoke-factory-launchd.sh --dry-run",
+      "mutating": false,
+      "gated": false,
+      "rationale": "Prints proposed plist + backup path + rollback command. Pure read."
+    }
+  ],
+  "gated": [
+    {
+      "verb": "factory.reconcile.active",
+      "underlying": "frontier factory reconcile --mode active",
+      "rationale": "Active mode emits real factory alerts. Requires operator approval for the current session.",
+      "approvalEnvVar": "HERMES_APPROVAL_TOKEN",
+      "tokenScope": "factory.reconcile.active",
+      "ttlSeconds": 900
+    },
+    {
+      "verb": "factory.activation.apply",
+      "underlying": "scripts/install-local-smoke-factory-launchd.sh --apply",
+      "rationale": "Writes a real plist on disk + mode.json. Needs explicit operator approval token. The script still refuses to call launchctl itself — the operator runs the reload.",
+      "approvalEnvVar": "HERMES_APPROVAL_TOKEN",
+      "tokenScope": "factory.activation.apply",
+      "ttlSeconds": 900
+    }
+  ],
+  "blocked": [
+    {
+      "pattern": "launchctl bootout|launchctl bootstrap|launchctl unload|launchctl load",
+      "rationale": "AGENTS.md hard rule #2 — the operator runs launchctl, never the bridge."
+    },
+    {
+      "pattern": "^/Users/test/bin/",
+      "rationale": "AGENTS.md hard rule #3 — the upstream lane wrapper at /Users/test/bin is owned by the operator."
+    },
+    {
+      "pattern": "git\\s+push",
+      "rationale": "Hermes never pushes branches. Pushes are operator-driven."
+    },
+    {
+      "pattern": "git\\s+commit",
+      "rationale": "Hermes never commits. Commits are operator-driven."
+    },
+    {
+      "pattern": "rm\\s+-rf|drop\\s+table|truncate\\b",
+      "rationale": "No destructive shell verbs through the bridge."
+    },
+    {
+      "pattern": "\\.frontier/ledger\\.db",
+      "rationale": "The ledger is append-only via frontier CLI; Hermes never touches the SQLite file directly."
+    }
+  ],
+  "notes": [
+    "The bridge is a one-way street: Hermes → frontier-os. Frontier-os does NOT call back into Hermes from the bridge.",
+    "Approval tokens are minted by the operator out-of-band (chat reply, signed message, etc.) and consumed once. The wrapper scripts refuse if the token's scope doesn't match the verb.",
+    "Adding a verb requires updating tests/hermes/policy.test.ts in the same commit."
+  ]
+}
