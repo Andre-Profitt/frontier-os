@@ -34,8 +34,8 @@ import {
   classify,
   classifyPrimaryVerifier,
   deriveFinalClassification,
+  isKillSwitchActive,
   loadSpec,
-  runFactoryCell,
   type RepairResult,
 } from "../../factories/ai-stack-local-smoke/run.ts";
 
@@ -333,19 +333,81 @@ export function scoreC8(
   );
 }
 
+// Pure assertion helper for alert coverage. Used by scoreC9 (live fixture
+// path) and exercisable by tests with hand-built AlertRecord arrays so an
+// anti-example regression — e.g., a filter that surfaces only factory
+// wrapper alerts and misses legacy ai-stack-local-smoke alerts (the
+// PR #2 v1 bug) — fails the criterion immediately.
+export interface AlertRecordLike {
+  alertId: string;
+  source: string;
+  summary: string;
+}
+
+export interface AlertCoverageVerdict {
+  ok: boolean;
+  factoryHit: boolean;
+  legacyHit: boolean;
+  unrelatedExcluded: boolean;
+  reason: string;
+}
+
+export function assertLegacyAndFactoryCoverage(
+  alerts: AlertRecordLike[],
+  expected: {
+    factoryAlertId: string;
+    legacyAlertId: string;
+    unrelatedAlertId: string;
+  },
+): AlertCoverageVerdict {
+  const ids = alerts.map((a) => a.alertId);
+  const factoryHit = ids.includes(expected.factoryAlertId);
+  const legacyHit = ids.includes(expected.legacyAlertId);
+  const unrelatedExcluded = !ids.includes(expected.unrelatedAlertId);
+  if (factoryHit && legacyHit && unrelatedExcluded) {
+    return {
+      ok: true,
+      factoryHit,
+      legacyHit,
+      unrelatedExcluded,
+      reason: `factory + legacy included, unrelated excluded (${[...ids].sort().join(", ")})`,
+    };
+  }
+  const missing: string[] = [];
+  if (!factoryHit) missing.push(`factory alert ${expected.factoryAlertId}`);
+  if (!legacyHit) missing.push(`legacy alert ${expected.legacyAlertId}`);
+  if (!unrelatedExcluded)
+    missing.push(`unrelated alert ${expected.unrelatedAlertId} not excluded`);
+  return {
+    ok: false,
+    factoryHit,
+    legacyHit,
+    unrelatedExcluded,
+    reason: `${missing.join("; ")}; ids=${[...ids].sort().join(", ")}`,
+  };
+}
+
 export function scoreC9(c: SuiteSpec["criteria"][number]): CriterionResult {
   // Seed a fixture ledger with one factory wrapper alert + one legacy
   // alert + one unrelated alert. Confirm the pack surfaces the first two
-  // and excludes the third.
+  // and excludes the third. Scoring delegates to the pure helper so an
+  // anti-example regression (filter dropping legacy alerts) is catchable
+  // via direct unit tests without needing to perturb the production
+  // alert filter or the live ledger.
   const dir = mkdtempSync(join(tmpdir(), "eval-c9-"));
   const dbPath = join(dir, "ledger.db");
+  const expected = {
+    factoryAlertId: "factory.ai-stack-local-smoke-eval-001",
+    legacyAlertId: "ai-stack-local-smoke-20260425-035014",
+    unrelatedAlertId: "unrelated-eval-x",
+  };
   try {
     const now = new Date();
     const iso = (offset: number) =>
       new Date(now.getTime() + offset * 1000).toISOString();
     seedFixtureLedger(dbPath, [
       {
-        alertId: "factory.ai-stack-local-smoke-eval-001",
+        alertId: expected.factoryAlertId,
         severity: "high",
         category: "health",
         source: "factory.ai-stack-local-smoke",
@@ -353,7 +415,7 @@ export function scoreC9(c: SuiteSpec["criteria"][number]): CriterionResult {
         ts: iso(-1800),
       },
       {
-        alertId: "ai-stack-local-smoke-20260425-035014",
+        alertId: expected.legacyAlertId,
         severity: "high",
         category: "health",
         source: "ai-stack.local-smoke-nightly",
@@ -361,7 +423,7 @@ export function scoreC9(c: SuiteSpec["criteria"][number]): CriterionResult {
         ts: iso(-3600),
       },
       {
-        alertId: "unrelated-eval-x",
+        alertId: expected.unrelatedAlertId,
         severity: "low",
         category: "other",
         source: "some-other-watcher",
@@ -374,20 +436,14 @@ export function scoreC9(c: SuiteSpec["criteria"][number]): CriterionResult {
       repoRoot: REPO_ROOT,
       ledgerDb: dbPath,
     });
-    const ids = (pack.recentAlerts ?? []).map((a) => a.alertId).sort();
-    const factoryHit = ids.includes("factory.ai-stack-local-smoke-eval-001");
-    const legacyHit = ids.includes("ai-stack-local-smoke-20260425-035014");
-    const unrelatedExcluded = !ids.includes("unrelated-eval-x");
-    if (factoryHit && legacyHit && unrelatedExcluded) {
-      return pass(
-        c,
-        `fixture: factory + legacy included, unrelated excluded (${ids.join(", ")})`,
-      );
-    }
-    return fail(
-      c,
-      `factoryHit=${factoryHit}, legacyHit=${legacyHit}, unrelatedExcluded=${unrelatedExcluded}, ids=${ids.join(", ")}`,
+    const verdict = assertLegacyAndFactoryCoverage(
+      pack.recentAlerts ?? [],
+      expected,
     );
+    if (verdict.ok) {
+      return pass(c, `fixture: ${verdict.reason}`);
+    }
+    return fail(c, verdict.reason);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -490,57 +546,120 @@ export function scoreC11(c: SuiteSpec["criteria"][number]): CriterionResult {
   );
 }
 
-export async function scoreC12(
-  c: SuiteSpec["criteria"][number],
-): Promise<CriterionResult> {
-  // Toggle the kill switch ON, run the factory cell, assert short-circuit.
-  // Touch / remove the file in the test; refuse to run if the user has
-  // already armed it.
-  const spec = loadSpec();
-  const killPath = resolve(REPO_ROOT, spec.policy.killSwitchFile);
-  if (existsSync(killPath)) {
-    return fail(
-      c,
-      `kill switch already armed at ${killPath}; refusing to perturb`,
-      "user has the kill switch active; cannot evaluate this criterion safely",
-    );
-  }
-  writeFileSync(killPath, "eval c12\n");
+export function scoreC12(c: SuiteSpec["criteria"][number]): CriterionResult {
+  // Read-only verification of kill-switch semantics. Does NOT touch the
+  // real factories/<lane>/state/disabled file. Three layers of evidence:
+  //
+  //   1. Detection: isKillSwitchActive(synthSpec) correctly tracks the
+  //      presence of a file at a synthetic absolute path under tmpdir.
+  //      The synth spec reuses the real spec but rewrites
+  //      policy.killSwitchFile to an absolute tmpdir path; isKillSwitchActive
+  //      uses path.resolve which short-circuits to the absolute value.
+  //
+  //   2. Decision: deriveFinalClassification({killSwitchActive: true,
+  //      primary: null, repair: skipped}) returns ambiguous with the
+  //      kill-switch-active escalation. This is the pure logic that
+  //      runFactoryCell delegates to.
+  //
+  //   3. Structural: source-text inspection of factories/<lane>/run.ts
+  //      confirms the kill-switch short-circuit precedes verifier,
+  //      ledger, and alert code. Any reordering that would let those
+  //      side effects fire under an active kill switch is detected here.
+  //
+  // The factory's own test #23 covers the live runFactoryCell short-circuit
+  // (it owns the writeFileSync to state/disabled). This eval criterion no
+  // longer duplicates that touch.
+  const realSpec = loadSpec();
+  const dir = mkdtempSync(join(tmpdir(), "eval-c12-"));
+  const synthKillPath = join(dir, "synthetic-disabled");
+  const synthSpec = {
+    ...realSpec,
+    policy: { ...realSpec.policy, killSwitchFile: synthKillPath },
+  } as Parameters<typeof isKillSwitchActive>[0];
   try {
-    const result = await runFactoryCell({
-      ledgerEnabled: false,
-      emitAlert: false,
-    });
-    const ok =
-      result.killSwitchActive === true &&
-      result.classification === "ambiguous" &&
-      result.repair.ran === false &&
-      result.repair.status === "skipped" &&
-      result.inner === null &&
-      result.ledgerSessionId === null &&
-      result.alertId === null &&
-      result.escalations.includes("kill-switch-active");
-    if (!ok) {
+    // (1a) absent -> false
+    if (isKillSwitchActive(synthSpec)) {
       return fail(
         c,
-        `kill-switch run produced unexpected: ${JSON.stringify({
-          classification: result.classification,
-          ks: result.killSwitchActive,
-          repairRan: result.repair.ran,
-          repairStatus: result.repair.status,
-          inner: result.inner,
-          ledger: result.ledgerSessionId,
-          alert: result.alertId,
-        })}`,
+        `synthetic kill-switch path unexpectedly active before write: ${synthKillPath}`,
       );
     }
-    return pass(
-      c,
-      "kill-switch ON: killSwitchActive=true, repair.ran=false, inner=null, ledgerSessionId=null, alertId=null, escalations include kill-switch-active",
-    );
+    // (1b) present -> true
+    writeFileSync(synthKillPath, "synth\n");
+    if (!isKillSwitchActive(synthSpec)) {
+      return fail(
+        c,
+        `synthetic kill-switch path not detected after write: ${synthKillPath}`,
+      );
+    }
   } finally {
-    rmSync(killPath, { force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
+
+  // (2) decision logic
+  const final = deriveFinalClassification({
+    killSwitchActive: true,
+    primary: null,
+    repair: {
+      ran: false,
+      kind: "verify-timeout-config",
+      status: "skipped",
+      observedTimeoutSeconds: null,
+      minRequiredSeconds: 60,
+      detail: "kill switch active",
+    },
+  });
+  if (
+    final.classification !== "ambiguous" ||
+    !final.escalations.includes("kill-switch-active")
+  ) {
+    return fail(
+      c,
+      `deriveFinalClassification with killSwitchActive=true returned classification=${final.classification}, escalations=[${final.escalations.join(",")}]`,
+    );
+  }
+
+  // (3) source-text inspection — slice to the runFactoryCell body so we
+  // compare call-site ordering, not function-definition ordering. The file
+  // declares runPrimaryVerifier / runInnerCheck / runBoundedRepair earlier
+  // as helpers; their call sites live inside runFactoryCell, which is
+  // where the kill-switch short-circuit must come first.
+  const factorySrcPath = resolve(REPO_ROOT, "factories", LANE, "run.ts");
+  const fullSrc = readFileSync(factorySrcPath, "utf8");
+  const bodyStart = fullSrc.indexOf("export async function runFactoryCell(");
+  const src = bodyStart >= 0 ? fullSrc.slice(bodyStart) : fullSrc;
+  const ksIdx = src.indexOf("if (isKillSwitchActive(spec))");
+  const verifierIdx = src.indexOf("runPrimaryVerifier(spec");
+  const innerIdx = src.indexOf("runInnerCheck(spec");
+  const repairIdx = src.indexOf("runBoundedRepair(spec)");
+  const ledgerEnsureIdx = src.indexOf("ledger.ensureSession(");
+  const ledgerAppendIdx = src.indexOf("ledger.appendEvent(");
+  const indices = {
+    ks: ksIdx,
+    verifier: verifierIdx,
+    inner: innerIdx,
+    repair: repairIdx,
+    ledgerEnsure: ledgerEnsureIdx,
+    ledgerAppend: ledgerAppendIdx,
+  };
+  const failedOrdering: string[] = [];
+  if (ksIdx < 0) failedOrdering.push("kill-switch check missing");
+  for (const [name, idx] of Object.entries(indices)) {
+    if (name === "ks") continue;
+    if (idx < 0) continue;
+    if (ksIdx > idx) failedOrdering.push(`kill-switch check after ${name}`);
+  }
+  if (failedOrdering.length > 0) {
+    return fail(
+      c,
+      `source ordering invariant broken: ${failedOrdering.join(", ")} (indices=${JSON.stringify(indices)})`,
+    );
+  }
+
+  return pass(
+    c,
+    "detection (synth tmpdir spec): isKillSwitchActive false→true on file presence; decision: deriveFinalClassification({killSwitchActive:true}) → ambiguous + kill-switch-active escalation; structural: kill-switch check precedes verifier/inner/repair/ledger calls in factories/<lane>/run.ts",
+  );
 }
 
 export function scoreC13(c: SuiteSpec["criteria"][number]): CriterionResult {
@@ -683,7 +802,7 @@ export async function runEval(): Promise<EvalReport> {
     scoreC9(c[8]!),
     scoreC10(c[9]!),
     scoreC11(c[10]!),
-    await scoreC12(c[11]!),
+    scoreC12(c[11]!),
     scoreC13(c[12]!),
     scoreC14(c[13]!),
     scoreC15(c[14]!),

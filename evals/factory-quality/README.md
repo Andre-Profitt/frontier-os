@@ -9,7 +9,7 @@ Concrete-first: this suite is wired specifically to the `ai-stack-local-smoke` f
 ```
 local-smoke-factory-quality.json   Rubric — 15 criteria with weights and ship/investigate/block thresholds
 run.ts                             Runner + criterion scorers + markdown / JSON output
-tests/quality.test.ts              16 tests including 7 anti-examples and the live good-example
+tests/quality.test.ts              22 tests including anti-examples (wrong-repo, false-green, alert-coverage)
 ```
 
 ## Run it
@@ -52,18 +52,30 @@ investigate   score >= 0.80 AND any failed
 block         score < 0.80 OR any heavyweight (weight>=2) failed
 ```
 
-Read-only by design: the runner reads `factory.json`, the live ledger (`PRAGMA query_only=1`), the context-pack output, and the evidence directory. C12 toggles the kill-switch file with a refusal-to-run guard if it's already armed. C13 reads past ledger sessions; it does not run the live factory.
+## Read-only proof
+
+The runner reads `factory.json`, the live ledger (`PRAGMA query_only = 1`), the context-pack output, and the evidence directory. Specifically:
+
+- **C12 does NOT touch the real `factories/<lane>/state/disabled` file.** It uses a synthetic spec rooted in `mkdtempSync(tmpdir())` for the kill-switch detection check, exercises `deriveFinalClassification({ killSwitchActive: true })` for the decision logic, and inspects the `runFactoryCell` source text to assert the kill-switch short-circuit precedes verifier / inner check / repair / ledger calls. A dedicated test asserts the real kill-switch path is not created during scoring.
+- **C13 reads past ledger sessions** (`PRAGMA query_only = 1`); it does not run the live factory.
+- **C9 / alert filter test** seeds a synthetic ledger DB under `mkdtempSync(tmpdir())` and removes it in `finally`. The production ledger is not seeded with test data.
+- **No /Users/test/bin scripts touched, no launchd plist touched.** The eval reads them via the spec for documentation but never opens them for write.
+- **C15** is itself the side-effect proof: it captures the filesystem fingerprint before/after a context-pack generation and asserts identity.
 
 ## Anti-examples covered by the test suite
 
-| Test                                           | What it asserts                                               |
-| ---------------------------------------------- | ------------------------------------------------------------- |
-| wrong-repo: `repo.marker = "ai-os"`            | scoreC3 returns failed                                        |
-| empty `forbiddenAreas`                         | scoreC4 returns failed with the missing keywords listed       |
-| empty `committedFiles`                         | scoreC1 returns failed                                        |
-| missing `factorySpecPath`                      | scoreC5 returns failed                                        |
-| empty allowed/forbidden actions                | scoreC6 returns failed                                        |
-| empty kill-switch path                         | scoreC7 returns failed                                        |
-| primary verifier swapped to inner mcp tool     | scoreC8 returns failed (catches the v1-of-Factory-#1 mistake) |
-| `derive(primary=ok, repair=stale)`             | classification is `failed`, not `passed`                      |
-| `derive(primary=ok, repair=skipped, ks=false)` | classification is not `passed` (no false green via skipped)   |
+| Test                                           | What it asserts                                                                                    |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| wrong-repo: `repo.marker = "ai-os"`            | scoreC3 returns failed                                                                             |
+| empty `forbiddenAreas`                         | scoreC4 returns failed with the missing keywords listed                                            |
+| empty `committedFiles`                         | scoreC1 returns failed                                                                             |
+| missing `factorySpecPath`                      | scoreC5 returns failed                                                                             |
+| empty allowed/forbidden actions                | scoreC6 returns failed                                                                             |
+| empty kill-switch path                         | scoreC7 returns failed                                                                             |
+| primary verifier swapped to inner mcp tool     | scoreC8 returns failed (catches the v1-of-Factory-#1 mistake)                                      |
+| `derive(primary=ok, repair=stale)`             | classification is `failed`, not `passed`                                                           |
+| `derive(primary=ok, repair=skipped, ks=false)` | classification is not `passed` (no false green via skipped)                                        |
+| only factory wrapper alerts (legacy missing)   | `assertLegacyAndFactoryCoverage` returns `ok=false` (catches the PR #2 v1 alert-filter regression) |
+| only legacy alerts (factory wrapper missing)   | coverage returns `ok=false`                                                                        |
+| unrelated alert leaks through filter           | coverage returns `ok=false` with `unrelatedExcluded=false`                                         |
+| C12 scoring is itself read-only                | the real `factories/<lane>/state/disabled` is not created                                          |

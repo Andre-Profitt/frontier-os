@@ -17,6 +17,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +30,7 @@ import {
   type RepairResult,
 } from "../../../factories/ai-stack-local-smoke/run.ts";
 import {
+  assertLegacyAndFactoryCoverage,
   runEval,
   scoreC1,
   scoreC3,
@@ -39,6 +41,7 @@ import {
   scoreC8,
   scoreC10,
   scoreC11,
+  scoreC12,
   scoreC14,
   type CriterionResult,
 } from "../run.ts";
@@ -306,6 +309,127 @@ test("scoreC14 (severity reflects final) passes — primary=ok+stale produces hi
 });
 
 // --- recommendation logic: thresholds enforce ship/investigate/block ------
+
+// --- C12 read-only proof (PR #3 fixup) ------------------------------------
+
+test("C12 is read-only: scoring it does not create the real factories/<lane>/state/disabled", () => {
+  const realKillPath = resolve(
+    REPO_ROOT,
+    "factories",
+    LANE,
+    "state",
+    "disabled",
+  );
+  // Refuse to run if the user has armed it; this test is read-only.
+  if (existsSync(realKillPath)) {
+    throw new Error(
+      `refusing to run: real kill switch already armed at ${realKillPath}`,
+    );
+  }
+  const r = scoreC12({ id: "C12", description: "kill switch", weight: 2 });
+  assert.equal(r.status, "passed");
+  assert.equal(
+    existsSync(realKillPath),
+    false,
+    `C12 must not create the real kill-switch file at ${realKillPath}`,
+  );
+});
+
+// --- alert-coverage anti-examples (PR #2 v1 regression catcher) -----------
+
+const expected = {
+  factoryAlertId: "factory.ai-stack-local-smoke-eval-001",
+  legacyAlertId: "ai-stack-local-smoke-20260425-035014",
+  unrelatedAlertId: "unrelated-eval-x",
+};
+
+test("anti-example: PR #2 v1 bug — only factory alerts (legacy missing) fails coverage", () => {
+  // Simulates the PR #2 v1 alert filter that matched only factory wrapper
+  // alerts and dropped legacy bare-source alerts. Must fail.
+  const verdict = assertLegacyAndFactoryCoverage(
+    [
+      {
+        alertId: expected.factoryAlertId,
+        source: "factory.ai-stack-local-smoke",
+        summary: "Factory wrapper failure",
+      },
+    ],
+    expected,
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.factoryHit, true);
+  assert.equal(verdict.legacyHit, false);
+  assert.match(verdict.reason, /legacy alert/);
+});
+
+test("anti-example: only legacy alerts (factory missing) fails coverage", () => {
+  const verdict = assertLegacyAndFactoryCoverage(
+    [
+      {
+        alertId: expected.legacyAlertId,
+        source: "ai-stack.local-smoke-nightly",
+        summary: "AI Stack local smoke failed",
+      },
+    ],
+    expected,
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.legacyHit, true);
+  assert.equal(verdict.factoryHit, false);
+});
+
+test("anti-example: unrelated alert leaking through filter fails coverage", () => {
+  const verdict = assertLegacyAndFactoryCoverage(
+    [
+      {
+        alertId: expected.factoryAlertId,
+        source: "factory.ai-stack-local-smoke",
+        summary: "f",
+      },
+      {
+        alertId: expected.legacyAlertId,
+        source: "ai-stack.local-smoke-nightly",
+        summary: "l",
+      },
+      {
+        alertId: expected.unrelatedAlertId,
+        source: "some-other-watcher",
+        summary: "x",
+      },
+    ],
+    expected,
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.unrelatedExcluded, false);
+  assert.match(verdict.reason, /unrelated alert/);
+});
+
+test("good case: factory + legacy included, unrelated absent — coverage passes", () => {
+  const verdict = assertLegacyAndFactoryCoverage(
+    [
+      {
+        alertId: expected.factoryAlertId,
+        source: "factory.ai-stack-local-smoke",
+        summary: "f",
+      },
+      {
+        alertId: expected.legacyAlertId,
+        source: "ai-stack.local-smoke-nightly",
+        summary: "l",
+      },
+    ],
+    expected,
+  );
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.factoryHit, true);
+  assert.equal(verdict.legacyHit, true);
+  assert.equal(verdict.unrelatedExcluded, true);
+});
+
+test("good case: empty alert list still fails (factory and legacy both missing)", () => {
+  const verdict = assertLegacyAndFactoryCoverage([], expected);
+  assert.equal(verdict.ok, false);
+});
 
 test("recommendation: heavyweight failure produces block", async () => {
   // Synthesize a CriterionResult set where a weight=2 criterion fails;
