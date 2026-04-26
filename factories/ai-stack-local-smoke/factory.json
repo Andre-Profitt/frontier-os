@@ -1,19 +1,21 @@
 {
   "factoryId": "ai-stack-local-smoke",
-  "version": "v1",
+  "version": "v2",
   "summary": "First-factory cell wrapping ai-stack.local-smoke-nightly. Concrete-first; do not generalize.",
   "objective": "Keep ai-stack.local-smoke-nightly healthy.",
   "lane": {
     "launchdLabel": "com.andre.ai-stack.local-smoke",
     "launchdPlist": "/Users/test/Library/LaunchAgents/com.andre.ai-stack.local-smoke.plist",
     "verifierEntry": "/Users/test/bin/ai-stack-local-smoke-nightly",
-    "verifierImpl": "/Users/test/bin/ai-stack-local-smoke",
-    "underlyingTool": [
+    "primaryVerifier": ["/Users/test/bin/ai-stack-local-smoke"],
+    "primaryVerifierExitSemantics": "exit=0 means all checks ok; exit!=0 means at least one check failed; spawn error / timeout means ambiguous",
+    "innerCheck": [
       "/Users/test/frontier-os/bin/frontier",
       "mcp",
       "smoke",
       "--read-only"
     ],
+    "innerCheckRole": "supplementary structured tool-count detail captured for evidence; does not by itself drive final classification",
     "logs": {
       "out": "/Users/test/Library/Logs/AIStack/local-smoke-agent.out.log",
       "err": "/Users/test/Library/Logs/AIStack/local-smoke-agent.err.log"
@@ -22,7 +24,8 @@
   "policy": {
     "approvalClass": 1,
     "allowedActions": [
-      "run-verifier",
+      "run-primary-verifier",
+      "run-inner-check",
       "capture-evidence",
       "verify-timeout-config",
       "write-ledger-entry",
@@ -35,7 +38,9 @@
       "force-push",
       "delete-evidence",
       "modify-siri-or-menubar",
-      "rename-screenshots-or-readme-links"
+      "rename-screenshots-or-readme-links",
+      "edit-primary-verifier-script",
+      "edit-launchd-plist"
     ],
     "killSwitchFile": "factories/ai-stack-local-smoke/state/disabled",
     "escalation": [
@@ -47,13 +52,26 @@
     ]
   },
   "classification": {
-    "passed": "verifier exit=0 AND stdout is JSON AND payload.failed == 0",
-    "failed": "verifier exit!=0 OR (JSON parse OK AND payload.failed > 0)",
-    "ambiguous": "exit=0 with non-JSON output, OR JSON parse failure with exit=0, OR timeout, OR file-not-found"
+    "primaryVerifier": {
+      "ambiguous": "spawn error or timeout (exit code -1 from spawnSync)",
+      "ok": "exit code == 0",
+      "failed": "exit code != 0 (regardless of stdout shape)"
+    },
+    "innerCheck": {
+      "ambiguous": "exit=-1 OR (exit=0 AND non-JSON/empty/missing-counters stdout)",
+      "passed": "exit=0 AND JSON parses AND failed==0",
+      "failed": "exit!=0 OR (exit=0 AND JSON parses AND failed>0)"
+    },
+    "final": {
+      "ambiguous": "kill switch active, OR primary verifier ambiguous, OR repair status == 'error' (missing evidence)",
+      "failed": "primary verifier failed, OR (primary verifier ok AND repair status == 'stale')",
+      "passed": "primary verifier ok AND repair status == 'ok' AND escalations is empty AND kill switch inactive",
+      "invariant": "classification == 'passed' implies escalations.length == 0 AND repair.status == 'ok' AND killSwitchActive == false"
+    }
   },
   "boundedRepair": {
     "kind": "verify-timeout-config",
-    "description": "Read-only check that the live smoke script's subprocess timeout for `frontier mcp smoke --read-only` is at least 60s. The 2026-04-25T07:55Z failure was a 30s subprocess.TimeoutExpired; commit a623dd6 in /Users/test bumped it to 60s. The repair *verifies the bump landed*; it does not modify files.",
+    "description": "Read-only check that the live smoke script's subprocess timeout for `frontier mcp smoke --read-only` is at least 60s. The 2026-04-25T07:55Z failure was a 30s subprocess.TimeoutExpired; commit a623dd6 in /Users/test bumped it to 60s. The repair *verifies the bump landed*; it does not modify files. Stale → factory result is downgraded to failed (not passed).",
     "target": "/Users/test/bin/ai-stack-local-smoke",
     "minTimeoutSeconds": 60,
     "destructive": false,
@@ -67,7 +85,7 @@
   "alert": {
     "source": "factory.ai-stack-local-smoke",
     "category": "health",
-    "severityByClassification": {
+    "severityByFinalClassification": {
       "passed": null,
       "failed": "high",
       "ambiguous": "medium"
