@@ -1,0 +1,21 @@
+331b6203c9393dbb6669c55ee04d498aefce249e
+ M manifests/adapters/browser.adapter.json
+ M scripts/enqueue-nightly-research.sh
+ M scripts/notify-alerts.sh
+ M src/adapters/browser/commands/select-option.ts
+ M src/adapters/browser/index.ts
+ M src/adapters/research/claude-sub.ts
+ M src/approvals/queue.ts
+ M src/cli.ts
+ M src/commands/store.ts
+ M src/daemon/server.ts
+ M src/ghost/shift.ts
+ M src/mcp/bridge.ts
+ M src/overnight/brief.ts
+ M src/policy/evaluator.ts
+?? factories/
+?? scripts/nexus_native_control.py
+?? src/adapters/browser/commands/extract.ts
+?? src/adapters/browser/commands/press-key.ts
+?? src/adapters/browser/commands/validate.ts
+?? src/commands/dispatch.ts

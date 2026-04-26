@@ -1,0 +1,4 @@
+ai-stack-local-smoke-20260425-035014|high|AI Stack local smoke failed|2026-04-25T07:55:50Z
+ai-stack-local-smoke-20260422-112911|high|Failure trigger: forced fail test|2026-04-22T15:29:16Z
+ai-stack-local-smoke-20260422-111949|high|Failure trigger: forced fail test|2026-04-22T15:19:54Z
+ai-stack-local-smoke-probe-20260422-151829|high|probe alert from codex|2026-04-22T15:18:29Z

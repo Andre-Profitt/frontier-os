@@ -1,0 +1,3 @@
+# Per-run factory output is generated; keep only the captured failure
+# evidence and example runs that the initial commit baselined.
+run-*.json

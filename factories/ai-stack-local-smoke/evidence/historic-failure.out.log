@@ -1,0 +1,74 @@
+Apps 7/7 running | MLX ready | LM Studio 3 models | Ollama 10 models | Downloads 0
+MLX host: partial
+MLX default model: mlx-community/Qwen2.5-7B-Instruct-4bit
+MLX service: ready (qwen2.5-7b-mlx @ http://127.0.0.1:8011/v1)
+MLX generate: Ready.
+LM Studio: 3 complete | 0 downloads
+Ollama: 10 installed | 0 loaded
+Apps 7/7 running | MLX ready | LM Studio 3 models | Ollama 10 models | Downloads 0 | Alerts 0
+MLX host: ready (serving path)
+MLX default model: mlx-community/Qwen2.5-7B-Instruct-4bit
+MLX service: ready (qwen2.5-7b-mlx @ http://127.0.0.1:8011/v1)
+MLX generate: Ready.
+LM Studio: 3 complete | 0 downloads
+Ollama: 10 installed | 0 loaded
+Claude CLI: 1.0.31 (Claude Code)
+Claude hooks: 6 scripts, all executable
+Claude settings: 5 MCP servers (frontier-os wired)
+Frontier MCP: 18/18 tools ok
+Ledger write probe: ok
+Apps 7/7 running | MLX ready | LM Studio 3 models | Ollama 10 models | Downloads 0 | Alerts 0
+MLX host: ready (serving path)
+MLX host doctor: partial
+MLX default model: mlx-community/Qwen2.5-7B-Instruct-4bit
+MLX service: ready (qwen2.5-7b-mlx @ http://127.0.0.1:8011/v1)
+MLX generate: Ready.
+LM Studio: 3 complete | 0 downloads
+Ollama: 10 installed | 0 loaded
+Claude CLI: 1.0.31 (Claude Code)
+Claude hooks: 6 scripts, all executable
+Claude settings: 5 MCP servers (frontier-os wired)
+Frontier MCP: 18/18 tools ok
+Ledger write probe: ok
+Apps 7/7 running | MLX ready | LM Studio 3 models | Ollama 10 models | Downloads 0 | Alerts 0
+MLX host: ready (serving path)
+MLX host doctor: partial
+MLX default model: mlx-community/Qwen2.5-7B-Instruct-4bit
+MLX service: ready (qwen2.5-7b-mlx @ http://127.0.0.1:8011/v1)
+MLX generate: Ready.
+LM Studio: 3 complete | 0 downloads
+Ollama: 10 installed | 0 loaded
+Traceback (most recent call last):
+  File "/Users/test/bin/ai-stack-local-smoke", line 262, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/test/bin/ai-stack-local-smoke", line 253, in main
+    claude_ok, claude_lines = claude_lane()
+                              ~~~~~~~~~~~^^
+  File "/Users/test/bin/ai-stack-local-smoke", line 116, in claude_lane
+    smoke = run([str(FRONTIER_BIN), "mcp", "smoke", "--read-only"], timeout=30)
+  File "/Users/test/bin/ai-stack-local-smoke", line 21, in run
+    return subprocess.run(
+           ~~~~~~~~~~~~~~^
+        cmd,
+        ^^^^
+    ...<3 lines>...
+        check=False,
+        ^^^^^^^^^^^^
+    )
+    ^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 558, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 1221, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 2131, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 1265, in _check_timeout
+    raise TimeoutExpired(
+    ...<2 lines>...
+            stderr=b''.join(stderr_seq) if stderr_seq else None)
+subprocess.TimeoutExpired: Command '['/Users/test/frontier-os/bin/frontier', 'mcp', 'smoke', '--read-only']' timed out after 30 seconds
+Frontier alert: ai-stack-local-smoke-20260425-035014
