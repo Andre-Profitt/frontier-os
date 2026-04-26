@@ -102,10 +102,27 @@ export class PermissionGate {
     };
   }
 
-  // True iff `target` resolves inside one of the writable roots. Uses
-  // path-prefix comparison rather than realpath so symlink games don't
-  // exfiltrate writes — workers in v1 should not be following symlinks
-  // into main worktrees regardless.
+  // True iff `target` resolves LEXICALLY inside one of the writable roots.
+  //
+  // ⚠️ WARNING: this is a LEXICAL prefix check only. It does NOT protect
+  // against symlink exfiltration. A path like
+  //   /tmp/wt-1/link-out/file.ts
+  // resolves syntactically inside /tmp/wt-1/ but, if `link-out` is a
+  // symlink to /tmp/elsewhere/, the actual write lands outside the
+  // worktree. The prefix-substring guard (`+ sep`) only stops the
+  // /tmp/wt-1-other lookalike attack.
+  //
+  // v1 PermissionGate is a POLICY DECLARATION, not a runtime sandbox.
+  // The current builder swarm never invokes this gate before a
+  // filesystem mutation (it applies diffs via `git apply`, which has
+  // its own --check). Any future caller that uses this for *real* write
+  // authority MUST add an lstat/realpath check on every parent directory
+  // in the path, or run the writer in a sandbox (chroot, namespace, etc.).
+  // Without that, a malicious or accidental symlink in the worktree
+  // can escape.
+  //
+  // Tracking: see `docs/architecture-review-brief-2026-04-26.md` § Q3
+  // and the GPT Pro review (Issue #6) for context.
   isInsideWritablePath(target: string): boolean {
     const abs = resolve(target);
     for (const root of this.writablePaths) {

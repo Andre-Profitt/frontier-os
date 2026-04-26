@@ -42,6 +42,27 @@ export interface BrokerCallOptions {
   // Override the maxAttempts default (defaults to 3 across all models in
   // the class).
   maxAttempts?: number;
+  // Pin to a specific model. Format: "<provider>:<model>". When set, the
+  // broker filters the resolved class candidates down to this exact key
+  // (no fallback). Used by the builder swarm to assign each parallel
+  // builder a different model — without this, the broker is free to
+  // pick the same model for every builder, defeating the purpose of
+  // parallel multi-model attempts.
+  //
+  // Returns rejected="model-override-not-found" if the override does not
+  // match any candidate the class would have allowed.
+  modelOverride?: string;
+}
+
+// Normalized model response, lifted out of the provider's body shape so
+// downstream callers (review-swarm, builder-swarm, arbiter) don't have
+// to introspect AttemptRecord or re-parse choices[0].message.content
+// themselves. Populated on success only.
+export interface NormalizedModelResponse {
+  text: string;
+  rawBody: unknown;
+  finishReason?: string;
+  usage?: unknown;
 }
 
 export interface BrokerCallResult {
@@ -49,8 +70,16 @@ export interface BrokerCallResult {
   taskClass: string;
   attempts: AttemptRecord[];
   selected: AttemptRecord | null;
+  // Populated on success. The successful attempt's response, normalized
+  // for downstream consumption. null on any failure.
+  selectedResponse: NormalizedModelResponse | null;
   totalDurationMs: number;
-  rejected: "no-class" | "no-models-enabled" | "all-attempts-failed" | null;
+  rejected:
+    | "no-class"
+    | "no-models-enabled"
+    | "model-override-not-found"
+    | "all-attempts-failed"
+    | null;
 }
 
 export interface AttemptRecord {
@@ -156,20 +185,39 @@ export class InferenceBroker {
         taskClass: opts.taskClass,
         attempts: [],
         selected: null,
+        selectedResponse: null,
         totalDurationMs: this.now() - t0,
         rejected: "no-class",
       };
     }
-    const candidates = this.registry.resolveClassModels(opts.taskClass);
+    let candidates = this.registry.resolveClassModels(opts.taskClass);
     if (candidates.length === 0) {
       return {
         ok: false,
         taskClass: opts.taskClass,
         attempts: [],
         selected: null,
+        selectedResponse: null,
         totalDurationMs: this.now() - t0,
         rejected: "no-models-enabled",
       };
+    }
+    if (opts.modelOverride !== undefined) {
+      const filtered = candidates.filter(
+        (c) => modelKey(c) === opts.modelOverride,
+      );
+      if (filtered.length === 0) {
+        return {
+          ok: false,
+          taskClass: opts.taskClass,
+          attempts: [],
+          selected: null,
+          selectedResponse: null,
+          totalDurationMs: this.now() - t0,
+          rejected: "model-override-not-found",
+        };
+      }
+      candidates = filtered;
     }
 
     // Per-class concurrency. Fast-path when nothing else is in flight.
@@ -260,6 +308,7 @@ export class InferenceBroker {
               taskClass: opts.taskClass,
               attempts,
               selected: record,
+              selectedResponse: normalizeResponse(res.body),
               totalDurationMs: this.now() - t0,
               rejected: null,
             };
@@ -302,6 +351,7 @@ export class InferenceBroker {
         taskClass: opts.taskClass,
         attempts,
         selected: null,
+        selectedResponse: null,
         totalDurationMs: this.now() - t0,
         rejected: "all-attempts-failed",
       };
@@ -313,6 +363,41 @@ export class InferenceBroker {
 
 function modelKey(m: ClassModel): string {
   return `${m.provider}:${m.model}`;
+}
+
+// Lift OpenAI-compatible chat-completion fields into NormalizedModelResponse.
+// Falls back to JSON-stringifying the body when the shape is unfamiliar so
+// downstream consumers always have *some* text to work with.
+export function normalizeResponse(body: unknown): NormalizedModelResponse {
+  if (body === null || body === undefined) {
+    return { text: "", rawBody: body };
+  }
+  if (typeof body !== "object") {
+    return { text: String(body), rawBody: body };
+  }
+  const choices = (body as { choices?: unknown }).choices;
+  const usage = (body as { usage?: unknown }).usage;
+  let text = "";
+  let finishReason: string | undefined;
+  if (Array.isArray(choices) && choices.length > 0) {
+    const first = choices[0];
+    if (typeof first === "object" && first !== null) {
+      const message = (first as { message?: unknown }).message;
+      if (typeof message === "object" && message !== null) {
+        const content = (message as { content?: unknown }).content;
+        if (typeof content === "string") text = content;
+      }
+      const fr = (first as { finish_reason?: unknown }).finish_reason;
+      if (typeof fr === "string") finishReason = fr;
+    }
+  }
+  if (text === "") {
+    text = JSON.stringify(body);
+  }
+  const out: NormalizedModelResponse = { text, rawBody: body };
+  if (finishReason !== undefined) out.finishReason = finishReason;
+  if (usage !== undefined) out.usage = usage;
+  return out;
 }
 
 function defaultProviderFactory(

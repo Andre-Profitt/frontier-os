@@ -186,3 +186,31 @@ test("isInsideWritablePath: parent dir → false", () => {
   });
   assert.equal(gate.isInsideWritablePath("/tmp"), false);
 });
+
+// --- known limitation: lexical-only check, not symlink-safe ---------------
+//
+// This test pins the documented contract: PermissionGate is a policy
+// declaration, not a runtime sandbox. A lexical prefix check cannot stop
+// symlink exfiltration. Any future caller that needs real write authority
+// MUST add lstat/realpath checks. See the comment on isInsideWritablePath
+// and the GPT Pro review (Issue #6).
+test("isInsideWritablePath: KNOWN LIMITATION — lexical-only, not symlink-safe", () => {
+  // We don't need a real symlink to assert the limitation: a path that
+  // *looks* inside the worktree (lexically) is reported as inside, even
+  // though a symlinked component would resolve elsewhere at write time.
+  // The point of this test is to make the limitation un-silently
+  // removable: anyone changing isInsideWritablePath() to be "smarter"
+  // either updates this test or breaks it loudly.
+  const gate = new PermissionGate({
+    skill: syntheticSkill(),
+    worktreePath: "/tmp/worker-1",
+  });
+  // /tmp/worker-1/link-out/file looks like it's inside /tmp/worker-1.
+  // The gate says yes (lexical). If `link-out` is a symlink to
+  // /tmp/elsewhere, the actual write goes outside — not the gate's
+  // responsibility today.
+  assert.equal(
+    gate.isInsideWritablePath("/tmp/worker-1/link-out/file.ts"),
+    true,
+  );
+});
