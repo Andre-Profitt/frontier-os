@@ -94,6 +94,10 @@ export interface AttemptRecord {
   durationMs: number;
   retryAfterMs: number | null;
   errorPreview?: string;
+  // NOTE: body / assistantText are intentionally NOT carried per-attempt.
+  // The successful response is exposed via BrokerCallResult.selectedResponse
+  // (NormalizedModelResponse), which keeps failed-attempt records small
+  // and gives downstream consumers one canonical shape to read.
 }
 
 export interface BrokerOptions {
@@ -300,6 +304,8 @@ export class InferenceBroker {
                 ? JSON.stringify(res.body).slice(0, 240)
                 : (res.rawText ?? "").slice(0, 240);
           }
+          // Success body lifted into BrokerCallResult.selectedResponse below;
+          // not duplicated on the AttemptRecord.
           attempts.push(record);
 
           if (res.ok) {
@@ -367,7 +373,9 @@ function modelKey(m: ClassModel): string {
 
 // Lift OpenAI-compatible chat-completion fields into NormalizedModelResponse.
 // Falls back to JSON-stringifying the body when the shape is unfamiliar so
-// downstream consumers always have *some* text to work with.
+// downstream consumers always have *some* text to work with. The R3 commit
+// originally added a separate extractAssistantText() helper; that is
+// superseded by this normalizer (Patch A → PR #11) and removed here.
 export function normalizeResponse(body: unknown): NormalizedModelResponse {
   if (body === null || body === undefined) {
     return { text: "", rawBody: body };

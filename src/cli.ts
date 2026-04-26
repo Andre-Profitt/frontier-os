@@ -3119,6 +3119,65 @@ async function cmdEvalStats(pretty: boolean): Promise<void> {
 
 // ---- swarm family (Phase 11: Magentic-One worktree swarm) ----
 
+async function cmdSwarmReview(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const diffPath =
+    typeof args.flags.diff === "string" ? args.flags.diff : undefined;
+  if (!diffPath) {
+    err({
+      error: "swarm review requires --diff <path-to-unified-diff>",
+      hint: "produce one with: git diff main..HEAD > /tmp/diff.patch",
+    });
+    return;
+  }
+  if (!existsSync(diffPath)) {
+    err({ error: `diff file not found: ${diffPath}` });
+    return;
+  }
+  const reviewerCount =
+    typeof args.flags.reviewers === "string"
+      ? parseInt(args.flags.reviewers, 10)
+      : 3;
+  const taskClass =
+    typeof args.flags["task-class"] === "string"
+      ? args.flags["task-class"]
+      : "adversarial_review";
+  const patchId =
+    typeof args.flags["patch-id"] === "string"
+      ? args.flags["patch-id"]
+      : undefined;
+
+  const { runReviewSwarm } = await import("./swarm/review-swarm.ts");
+  const { InferenceBroker } = await import("./inference/broker.ts");
+
+  const diff = readFileSync(diffPath, "utf8");
+  const broker = new InferenceBroker();
+  const packet = await runReviewSwarm(
+    { broker },
+    {
+      diff,
+      diffSource: {
+        kind: "file",
+        path: diffPath,
+        sizeBytes: Buffer.byteLength(diff, "utf8"),
+      },
+      reviewerCount,
+      taskClass,
+      ...(patchId ? { patchId } : {}),
+    },
+  );
+  out(packet, pretty);
+  // Exit 2 if any reviewer found a high-severity bug or contract violation —
+  // CI/operator can wire on this.
+  const blocking =
+    (packet.findingsBySeverity.high ?? 0) > 0 &&
+    ((packet.findingsByCategory.bug ?? 0) > 0 ||
+      (packet.findingsByCategory.contract_violation ?? 0) > 0);
+  if (blocking) process.exit(2);
+}
+
 async function cmdSwarmRun(args: ParsedArgs, pretty: boolean): Promise<void> {
   const task = typeof args.flags.task === "string" ? args.flags.task : "";
   if (!task) return err({ error: "swarm run requires --task <description>" });
@@ -4342,9 +4401,12 @@ async function main(): Promise<void> {
         return cmdSwarmRun(args, pretty);
       case "list":
         return cmdSwarmList(args, pretty);
+      case "review":
+        return cmdSwarmReview(args, pretty);
       default:
         return err({
           error: `unknown swarm subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["run", "list", "review"],
         });
     }
   }
