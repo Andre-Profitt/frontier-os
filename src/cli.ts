@@ -7,8 +7,8 @@
 //                                                 [--input <json|path>]
 //                                                 [--pretty]
 
-import { readFileSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, resolve as resolveAbs } from "node:path";
 
 import { loadManifests, findManifest, resolveAdapter } from "./registry.ts";
 import {
@@ -3727,6 +3727,132 @@ async function cmdGhostQueue(args: ParsedArgs, pretty: boolean): Promise<void> {
   out({ queued: graphPath, destination: dest }, pretty);
 }
 
+// ---- arbiter family (PR R4: merge arbiter) ----
+
+async function cmdArbiterDecide(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const packetPath =
+    typeof args.flags.packet === "string" ? args.flags.packet : undefined;
+  const rubricPath =
+    typeof args.flags.rubric === "string"
+      ? args.flags.rubric
+      : "taste/rubrics/factory_run_rubric.json";
+  const reviewsPath =
+    typeof args.flags.reviews === "string" ? args.flags.reviews : undefined;
+  const qualityFloor =
+    typeof args.flags["quality-floor"] === "string"
+      ? parseFloat(args.flags["quality-floor"])
+      : 0.7;
+  const skipVerify = args.flags["skip-verify"] === true;
+  const antiExamplesArg =
+    typeof args.flags["anti-examples"] === "string"
+      ? args.flags["anti-examples"]
+      : "taste/anti_examples/false_green_repair.md,taste/anti_examples/wrong_repo_hallucination.md,taste/anti_examples/narrow_alert_filter.md";
+  const antiExamplePaths = antiExamplesArg
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  if (!packetPath) {
+    err({
+      error:
+        "arbiter decide requires --packet <path-to-builder-swarm-packet.json> [--reviews <dir-or-file>] [--rubric <path>] [--quality-floor 0.7] [--anti-examples a,b,c] [--skip-verify]",
+    });
+    return;
+  }
+  if (!existsSync(packetPath)) {
+    err({ error: `packet file not found: ${packetPath}` });
+    return;
+  }
+
+  const packet = JSON.parse(readFileSync(packetPath, "utf8")) as {
+    packetId?: string;
+    taskId?: string;
+    candidates?: Array<{
+      builderId: string;
+      modelKey?: string;
+      worktreePath?: string;
+      ok: boolean;
+      phase: string;
+      patch?: {
+        diff: string;
+        files: string[];
+        sizeBytes: number;
+        addedLines: number;
+        deletedLines: number;
+        commitCount: number;
+      };
+    }>;
+  };
+
+  // Load reviewer findings, if --reviews points at a dir of ReviewPacket
+  // JSON or a single file. Each ReviewPacket exposes findingsBySeverity /
+  // findingsByCategory aggregated across reviewers — exactly what the
+  // arbiter needs.
+  const reviewerFindings: Array<{
+    builderId: string;
+    findingsBySeverity?: { high?: number; medium?: number; low?: number };
+    findingsByCategory?: Record<string, number>;
+  }> = [];
+  if (reviewsPath && existsSync(reviewsPath)) {
+    const stat = statSync(reviewsPath);
+    const files = stat.isDirectory()
+      ? readdirSync(reviewsPath)
+          .filter((f) => f.endsWith(".json"))
+          .map((f) => resolveAbs(reviewsPath, f))
+      : [reviewsPath];
+    for (const f of files) {
+      try {
+        const rp = JSON.parse(readFileSync(f, "utf8")) as {
+          // Convention: a review packet's filename or `patchId` carries
+          // the builderId so the arbiter can pair them. v1 falls back to
+          // matching by basename (b1.json → builderId "b1").
+          patchId?: string;
+          findingsBySeverity?: {
+            high?: number;
+            medium?: number;
+            low?: number;
+          };
+          findingsByCategory?: Record<string, number>;
+        };
+        const builderId =
+          (rp.patchId && /^b\d+$/.test(rp.patchId) ? rp.patchId : null) ??
+          basename(f, ".json");
+        reviewerFindings.push({
+          builderId,
+          ...(rp.findingsBySeverity
+            ? { findingsBySeverity: rp.findingsBySeverity }
+            : {}),
+          ...(rp.findingsByCategory
+            ? { findingsByCategory: rp.findingsByCategory }
+            : {}),
+        });
+      } catch {
+        // Skip unparseable.
+      }
+    }
+  }
+
+  const { decide } = await import("./arbiter/arbiter.ts");
+  const decision = await decide({
+    taskId: packet.taskId ?? "unknown-task",
+    ...(packet.packetId ? { packetId: packet.packetId } : {}),
+    candidates: packet.candidates ?? [],
+    reviewerFindings,
+    rubricPath,
+    qualityFloor,
+    antiExamplePaths,
+    ...(skipVerify ? { typecheckCommand: null, testCommand: null } : {}),
+  });
+  out(decision, pretty);
+  // Operator workflow: exit 1 on reject, exit 2 on escalate, exit 0 on
+  // accept — so CI / wrappers can branch.
+  if (decision.decision === "reject") process.exit(1);
+  if (decision.decision === "escalate_to_human") process.exit(2);
+}
+
 // ---- builder family (PR R2: worktree manager) ----
 
 async function cmdBuilderSpawn(
@@ -4604,6 +4730,18 @@ async function main(): Promise<void> {
       default:
         return err({
           error: `unknown work subcommand: ${args.subcommand ?? "(none)"}`,
+        });
+    }
+  }
+
+  if (args.family === "arbiter") {
+    switch (args.subcommand) {
+      case "decide":
+        return cmdArbiterDecide(args, pretty);
+      default:
+        return err({
+          error: `unknown arbiter subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["decide"],
         });
     }
   }
