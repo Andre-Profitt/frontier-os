@@ -56,13 +56,27 @@ index 0000000..ce01362
 +export const v = 42;
 `;
 
+// Stub inputs may pass `assistantText` or `body` (test convenience); the
+// stub constructs a proper BrokerCallResult including selectedResponse.
+// modelOverride is captured per-call so tests can assert pinning works.
+interface StubResponse {
+  ok?: boolean;
+  status?: number;
+  modelKey?: string;
+  durationMs?: number;
+  assistantText?: string;
+  body?: unknown;
+}
+
 class StubBroker implements Pick<InferenceBroker, "callClass"> {
-  private queue: Array<Partial<AttemptRecord> | { throw: Error } | "empty"> =
-    [];
+  private queue: Array<StubResponse | { throw: Error } | "empty"> = [];
   private modelKey = "stub:m1";
+  // Per-call snapshot of (taskClass, modelOverride) — used by Patch C
+  // tests to assert each builder routed to its pinned model.
+  public callLog: Array<{ taskClass: string; modelOverride?: string }> = [];
 
   enqueue(
-    ...responses: Array<Partial<AttemptRecord> | { throw: Error } | "empty">
+    ...responses: Array<StubResponse | { throw: Error } | "empty">
   ): void {
     this.queue.push(...responses);
   }
@@ -76,6 +90,13 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
   }
 
   async callClass(opts: BrokerCallOptions): Promise<BrokerCallResult> {
+    const logEntry: { taskClass: string; modelOverride?: string } = {
+      taskClass: opts.taskClass,
+    };
+    if (opts.modelOverride !== undefined) {
+      logEntry.modelOverride = opts.modelOverride;
+    }
+    this.callLog.push(logEntry);
     const next = this.queue.shift();
     if (next === undefined || next === "empty") {
       return {
@@ -83,6 +104,7 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
         taskClass: opts.taskClass,
         attempts: [],
         selected: null,
+        selectedResponse: null,
         totalDurationMs: 1,
         rejected: "all-attempts-failed",
       };
@@ -90,9 +112,13 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
     if (typeof next === "object" && next !== null && "throw" in next) {
       throw next.throw;
     }
-    const r = next as Partial<AttemptRecord>;
+    const r = next as StubResponse;
+    // When modelOverride is set, the broker would echo that back as the
+    // selected.modelKey. Mirror that in the stub so tests asserting
+    // pinning see the right value.
+    const effectiveModelKey = opts.modelOverride ?? r.modelKey ?? this.modelKey;
     const record: AttemptRecord = {
-      modelKey: r.modelKey ?? this.modelKey,
+      modelKey: effectiveModelKey,
       provider: "stub",
       model: "m1",
       attemptNumber: 1,
@@ -102,16 +128,20 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
       ok: r.ok ?? true,
       durationMs: r.durationMs ?? 5,
       retryAfterMs: null,
-      ...(r.assistantText !== undefined
-        ? { assistantText: r.assistantText }
-        : {}),
-      ...(r.body !== undefined ? { body: r.body } : {}),
     };
+    let selectedResponse = null;
+    if (record.ok) {
+      const text =
+        r.assistantText ??
+        (r.body !== undefined && r.body !== null ? JSON.stringify(r.body) : "");
+      selectedResponse = { text, rawBody: r.body ?? null };
+    }
     return {
       ok: record.ok,
       taskClass: opts.taskClass,
       attempts: [record],
       selected: record.ok ? record : null,
+      selectedResponse,
       totalDurationMs: record.durationMs,
       rejected: record.ok ? null : "all-attempts-failed",
     };
@@ -563,6 +593,221 @@ test("runBuilderSwarm: modelsUsed dedupes and sorts", async () => {
       },
     );
     assert.deepEqual(packet.modelsUsed, ["a:m", "z:m"]);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- model pinning (Patch C / GPT Pro Issue #1) --------------------------
+
+test("runBuilderSwarm: pinned modelKeys are passed to broker.callClass({modelOverride}) per builder", async () => {
+  const broker = new StubBroker();
+  // The stub now echoes back the modelOverride as selected.modelKey,
+  // which is exactly what the real broker does with modelOverride. So
+  // each candidate's modelKey should match the pinned key.
+  for (let i = 0; i < 3; i++) {
+    broker.enqueue({
+      ok: true,
+      assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+    });
+  }
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "pin",
+        taskDescription: "pinning test",
+        builderCount: 3,
+        baseBranch: "main",
+        modelKeys: ["pinned:k1", "pinned:k2", "pinned:k3"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    // The broker received modelOverride for each builder.
+    const overrides = broker.callLog
+      .map((c) => c.modelOverride)
+      .filter((m): m is string => m !== undefined)
+      .sort();
+    assert.deepEqual(overrides, ["pinned:k1", "pinned:k2", "pinned:k3"]);
+    // The candidates' modelKey reflects the pinned model (echoed by stub).
+    const modelKeys = packet.candidates.map((c) => c.modelKey).sort();
+    assert.deepEqual(modelKeys, ["pinned:k1", "pinned:k2", "pinned:k3"]);
+    // The packet's modelsUsed roster also reflects the pinned models.
+    assert.deepEqual(packet.modelsUsed, [
+      "pinned:k1",
+      "pinned:k2",
+      "pinned:k3",
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: when modelKeys is omitted, broker is called WITHOUT modelOverride", async () => {
+  // Sanity check: if the caller doesn't pin, the broker is free to pick
+  // any model in the class (the legacy behavior). Asserts that
+  // modelOverride is not silently set.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "nopin",
+        taskDescription: "no pin",
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.equal(broker.callLog.length, 1);
+    assert.equal(broker.callLog[0]?.modelOverride, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- scope gate (Patch C / GPT Pro Issue #4) -----------------------------
+
+test("runBuilderSwarm: diff outside touchList → phase=scope_rejected, git apply not called, rawText preserved", async () => {
+  const broker = new StubBroker();
+  // Diff touches added.ts; touchList only allows lib/foo.ts.
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "scope",
+        taskDescription: "model patches the wrong file",
+        touchList: ["lib/foo.ts"], // SAMPLE_DIFF touches added.ts, NOT in scope
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "scope_rejected");
+    assert.equal(c?.ok, false);
+    assert.match(c?.errorMessage ?? "", /scope rejected|outside_touch_list/);
+    assert.match(c?.rawText ?? "", /added\.ts/);
+    // No patch attempted — worktree stays empty.
+    assert.equal(c?.patch, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: diff inside touchList → applies, commits, collects (scope gate is permissive when allowed)", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "scope-ok",
+        taskDescription: "model patches the right file",
+        touchList: ["added.ts"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.equal(packet.candidates[0]?.phase, "collected");
+    assert.equal(packet.candidates[0]?.ok, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: empty touchList → scope gate skipped, behaviour identical to pre-Patch-C", async () => {
+  // Backward-compat sanity: callers that don't pin scope (the
+  // current default) get the same behaviour they had before Patch C.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "no-scope",
+        taskDescription: "no touchList",
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.equal(packet.candidates[0]?.phase, "collected");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: scope_rejected packet still validates against builder-swarm-packet schema (phase enum updated)", async () => {
+  const { validateBuilderSwarmPacket } = await import("../../schemas.ts");
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "scope-schema",
+        taskDescription: "x",
+        touchList: ["never-matches.ts"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.equal(packet.candidates[0]?.phase, "scope_rejected");
+    const valid = validateBuilderSwarmPacket(packet);
+    if (!valid) {
+      console.error(JSON.stringify(validateBuilderSwarmPacket.errors, null, 2));
+    }
+    assert.equal(valid, true);
   } finally {
     cleanup();
   }

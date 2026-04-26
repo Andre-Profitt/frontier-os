@@ -30,12 +30,14 @@ import type { BuilderRun, BuilderPatch } from "../builders/types.ts";
 import { defaultGitRunner, type GitRunner } from "../builders/git.ts";
 import { loadPromptTemplate, loadSkill, type Skill } from "../skills/loader.ts";
 import { extractDiffs } from "./diff-extractor.ts";
+import { checkDiffScope } from "./diff-scope-checker.ts";
 import { renderPrompt } from "./review-swarm.ts";
 
 export type CandidatePhase =
   | "spawn_failed"
   | "broker_failed"
   | "no_diff_extracted"
+  | "scope_rejected"
   | "apply_failed"
   | "applied"
   | "committed"
@@ -255,6 +257,13 @@ async function runOneBuilder(
     brokerResult = await deps.broker.callClass({
       taskClass: input.taskClass,
       messages: [{ role: "user", content: filledPrompt }],
+      // Pin to the assigned model when caller specified one. Without this
+      // pass-through, the broker is free to pick the same model for every
+      // builder, defeating the purpose of parallel multi-model attempts.
+      // (GPT Pro review Issue #1.)
+      ...(input.pinnedModelKey !== undefined
+        ? { modelOverride: input.pinnedModelKey }
+        : {}),
     });
   } catch (e) {
     return failureWithRun(run, "broker_failed", now() - tStart, e);
@@ -273,7 +282,7 @@ async function runOneBuilder(
   }
 
   const modelKey = brokerResult.selected.modelKey;
-  const rawText = extractAssistantText(brokerResult.selected);
+  const rawText = brokerResult.selectedResponse?.text ?? "";
 
   // ---- 4. extract diff ----
   const diffs = extractDiffs(rawText);
@@ -292,8 +301,30 @@ async function runOneBuilder(
     };
   }
 
-  // ---- 5. git apply --check then apply ----
+  // ---- 4.5 scope check (Patch C / GPT Pro Issue #4) ----
+  // The model was prompted with a touchList, but it is free to ignore
+  // that and patch unrelated files. The arbiter would otherwise see an
+  // overbroad patch as if it were the requested change. We reject before
+  // git apply so the worktree stays clean.
   const diffText = diffs[0]!.diff;
+  const scopeCheck = checkDiffScope(diffText, {
+    touchList: input.touchList,
+  });
+  if (!scopeCheck.allowed) {
+    return {
+      builderId,
+      modelKey,
+      runId: run.runId,
+      worktreePath: run.worktreePath,
+      ok: false,
+      phase: "scope_rejected",
+      elapsedMs: now() - tStart,
+      errorMessage: `diff scope rejected — ${scopeCheck.reason}`,
+      rawText,
+    };
+  }
+
+  // ---- 5. git apply --check then apply ----
   const applyOutcome = applyDiffToWorktree({
     diffText,
     worktreePath: run.worktreePath,
@@ -474,16 +505,8 @@ function commitInWorktree(opts: {
   return { ok: true };
 }
 
-function extractAssistantText(selected: {
-  assistantText?: string;
-  body?: unknown;
-}): string {
-  if (typeof selected.assistantText === "string") return selected.assistantText;
-  if (selected.body !== undefined && selected.body !== null) {
-    return JSON.stringify(selected.body);
-  }
-  return "";
-}
+// Note: previous extractAssistantText helper removed; broker now exposes
+// callRes.selectedResponse?.text (NormalizedModelResponse) directly.
 
 function newPacketId(nowMs: number): string {
   const ts = Math.floor(nowMs / 1000).toString(36);

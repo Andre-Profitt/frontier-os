@@ -55,6 +55,7 @@
             "spawn_failed",
             "broker_failed",
             "no_diff_extracted",
+            "scope_rejected",
             "apply_failed",
             "applied",
             "committed",
