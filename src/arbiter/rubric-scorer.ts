@@ -89,21 +89,36 @@ export function scoreCandidate(input: ScorerInput): RubricScore {
     });
   }
 
-  // Weighted aggregate over non-null criteria.
+  // Weighted aggregate + coverage. Coverage is the fraction of total
+  // weight that was scored (non-null). Without it, a candidate could
+  // earn score=1.0 from one criterion in a 10-criterion rubric — false
+  // confidence. Arbiter MUST gate on coverage in addition to score.
+  // (GPT Pro review Issue #3.)
   let totalWeight = 0;
+  let scoredWeight = 0;
   let weightedSum = 0;
+  const unsupportedCriteria: string[] = [];
   for (const c of criteria) {
-    if (c.score === null) continue;
     const w = c.weight ?? 1;
     totalWeight += w;
+    if (c.score === null) {
+      unsupportedCriteria.push(c.id);
+      continue;
+    }
+    scoredWeight += w;
     weightedSum += c.score * w;
   }
-  const aggregate = totalWeight > 0 ? weightedSum / totalWeight : 0;
+  const aggregate = scoredWeight > 0 ? weightedSum / scoredWeight : 0;
+  const coverage = totalWeight > 0 ? scoredWeight / totalWeight : 0;
 
   return {
     builderId: input.builderId,
     rubricId: input.rubric.rubricId,
     score: aggregate,
+    scoredWeight,
+    totalWeight,
+    coverage,
+    unsupportedCriteria,
     criteria,
   };
 }
@@ -144,6 +159,18 @@ function scoreCriterion(
       return {
         score: 1,
         rationale: "verification re-run passed (typecheck + test exit 0)",
+      };
+    }
+    if (v.phase === "passed_typecheck_only") {
+      // Typecheck succeeded; tests were not run because the caller
+      // didn't supply a testCommand. Score as a partial pass — the
+      // arbiter's separate verPassed gate (gated on requireTests)
+      // decides whether to count this as eligible. Scorer just reports
+      // the partial signal.
+      return {
+        score: 0.5,
+        rationale:
+          "verification re-run typecheck-only (no testCommand); arbiter's requireTests gate decides eligibility",
       };
     }
     return {

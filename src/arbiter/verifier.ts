@@ -92,6 +92,16 @@ export function verifyCandidate(opts: VerifierOptions): VerificationResult {
       testStderr = truncate(r.stderr, 2000);
       if (r.status !== 0) phase = "tests_failed";
     }
+  } else if (
+    phase === "passed" &&
+    (testCmd === null || testCmd === undefined)
+  ) {
+    // Typecheck succeeded; tests were not run because no testCommand was
+    // supplied. Distinguish from "passed" so the arbiter can refuse to
+    // call this candidate "verified" without explicit caller consent.
+    // (GPT Pro review Issue #5 — verification claim must match what
+    // actually ran.)
+    phase = "passed_typecheck_only";
   }
 
   const result: VerificationResult = {

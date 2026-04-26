@@ -48,7 +48,11 @@ test("verifyCandidate: missing worktree → phase=worktree_missing", () => {
   assert.equal(log.length, 0); // no commands ran
 });
 
-test("verifyCandidate: typecheck pass + no test command → phase=passed", () => {
+test("verifyCandidate: typecheck pass + no test command → phase=passed_typecheck_only (Patch D)", () => {
+  // Pre-Patch-D returned "passed", masking the fact tests were not run.
+  // Patch D distinguishes the case so the arbiter can refuse to call
+  // this "verified" unless the caller opted out of tests via
+  // requireTests=false.
   withTempDir((dir) => {
     const log: ExecCall[] = [];
     const r = verifyCandidate({
@@ -58,7 +62,7 @@ test("verifyCandidate: typecheck pass + no test command → phase=passed", () =>
       testCommand: null,
       exec: stubExec([{ status: 0 }], log),
     });
-    assert.equal(r.phase, "passed");
+    assert.equal(r.phase, "passed_typecheck_only");
     assert.equal(r.typecheckExitCode, 0);
     assert.equal(log.length, 1);
     assert.deepEqual(log[0]?.args, ["run", "typecheck"]);

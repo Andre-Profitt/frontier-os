@@ -85,6 +85,7 @@
             "worktree_missing",
             "typecheck_failed",
             "tests_failed",
+            "passed_typecheck_only",
             "passed"
           ]
         },
@@ -99,7 +100,16 @@
     "rubricScore": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["builderId", "rubricId", "score", "criteria"],
+      "required": [
+        "builderId",
+        "rubricId",
+        "score",
+        "scoredWeight",
+        "totalWeight",
+        "coverage",
+        "unsupportedCriteria",
+        "criteria"
+      ],
       "properties": {
         "builderId": { "type": "string" },
         "rubricId": { "type": "string" },
@@ -107,7 +117,28 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Weighted aggregate of criterion scores."
+          "description": "Weighted aggregate over scored (non-null) criteria. MUST be read alongside coverage — score=1.0 with coverage=0.1 means one criterion of ten was actually scored."
+        },
+        "scoredWeight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Sum of weights for criteria that returned a non-null score."
+        },
+        "totalWeight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Sum of weights across all criteria in the rubric."
+        },
+        "coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "scoredWeight / totalWeight. Arbiter requires this is at or above minRubricCoverage before treating score as trustworthy. (GPT Pro Issue #3.)"
+        },
+        "unsupportedCriteria": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs of criteria that returned score=null (heuristic could not fire). Surfaced so the operator sees which dimensions were not assessed."
         },
         "criteria": {
           "type": "array",

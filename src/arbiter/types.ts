@@ -13,6 +13,11 @@ export type VerificationPhase =
   | "worktree_missing"
   | "typecheck_failed"
   | "tests_failed"
+  // typecheck succeeded; tests were not run because no testCommand was
+  // supplied. Distinct from "passed" so the arbiter can refuse to call
+  // a candidate "verified" when only half the verification ran.
+  // (GPT Pro review Issue #5.)
+  | "passed_typecheck_only"
   | "passed";
 
 export interface VerificationResult {
@@ -43,6 +48,17 @@ export interface RubricScore {
   // Weighted aggregate of non-null criterion scores. If every criterion
   // is null this is 0; arbiter handles that explicitly.
   score: number;
+  // Sum of weights for criteria with non-null scores.
+  scoredWeight: number;
+  // Sum of weights across the entire rubric.
+  totalWeight: number;
+  // scoredWeight / totalWeight. Arbiter MUST gate on this in addition
+  // to score so a candidate can't earn 1.0 from one criterion out of
+  // ten. (GPT Pro review Issue #3.)
+  coverage: number;
+  // IDs of criteria that returned score=null (heuristic could not fire).
+  // Surfaced so the operator sees which dimensions were not assessed.
+  unsupportedCriteria: string[];
   criteria: CriterionScore[];
 }
 
