@@ -1,0 +1,4 @@
+# Factory runtime state — never committed.
+# Tracks current mode, last run summary, seen-items dedupe set, kill switch.
+*
+!.gitignore

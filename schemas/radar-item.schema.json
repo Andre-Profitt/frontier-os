@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/radar-item.schema.json",
+  "title": "FrontierOS AI Radar Item",
+  "description": "Canonical record emitted by factories/ai-radar normalizers. PR #8 produces these with empty claims, default classification (all 0s = not-yet-classified), and recommendedAction='remember'. PR #9 enriches without changing the shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "source",
+    "observedAt",
+    "title",
+    "summary",
+    "claims",
+    "classification",
+    "recommendedAction",
+    "linkedArtifacts"
+  ],
+  "properties": {
+    "schema": { "const": "frontier_os.radar.radar_item.v1" },
+    "id": {
+      "type": "string",
+      "pattern": "^radar_[0-9a-f]{16}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name", "url", "trustTier"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "official_changelog",
+            "github_release",
+            "github_raw_changelog",
+            "discord",
+            "youtube",
+            "paper",
+            "blog",
+            "repo_activity",
+            "community_post"
+          ]
+        },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri" },
+        "trustTier": {
+          "type": "string",
+          "enum": ["official", "maintainer", "community", "rumor"]
+        }
+      }
+    },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "publishedAt": { "type": "string" },
+    "title": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string" },
+    "rawTextPath": { "type": "string" },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "supportUrl", "confidence"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1 },
+          "supportUrl": { "type": "string", "format": "uri" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "novelty", "impact", "urgency", "confidence"],
+      "properties": {
+        "topic": {
+          "type": "string",
+          "enum": [
+            "model_release",
+            "agent_runtime",
+            "coding_agent",
+            "mcp",
+            "security",
+            "evals",
+            "research",
+            "infra",
+            "local_models",
+            "voice_ui",
+            "workflow"
+          ]
+        },
+        "novelty": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "impact": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "urgency": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "confidence": { "type": "integer", "minimum": 0, "maximum": 3 }
+      }
+    },
+    "recommendedAction": {
+      "type": "string",
+      "enum": [
+        "ignore",
+        "remember",
+        "investigate",
+        "create_eval",
+        "update_skill",
+        "update_model_policy",
+        "open_upgrade_pr",
+        "security_review"
+      ]
+    },
+    "linkedArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skill": { "type": "string" },
+        "eval": { "type": "string" },
+        "tasteAntiExample": { "type": "string" },
+        "factory": { "type": "string" },
+        "pr": { "type": "string" }
+      }
+    }
+  }
+}

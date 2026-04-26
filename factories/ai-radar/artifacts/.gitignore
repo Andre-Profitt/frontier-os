@@ -1,0 +1,6 @@
+# Daily digests + items JSON. Daily files are runtime output and gitignored.
+# Example artifacts (filenames containing "example") ARE tracked, to document the format.
+radar-digest-*.md
+radar-items-*.json
+!example-*.md
+!example-*.json
