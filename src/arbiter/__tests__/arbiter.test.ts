@@ -463,6 +463,157 @@ test("decide: typecheck-only verification with requireTests=false → accept", a
   assert.equal(dec.decision, "accept");
 });
 
+// --- Patch E3: reject vs escalate (GPT Pro second-pass blocker #1) ------
+//
+// Pre-E3 the rule was:
+//   "any candidate has an objective failure" → whole-run reject
+// That threw away viable uncertainty-only candidates. E3 rule:
+//   "any candidate is uncertainty-only" → escalate
+//   "every candidate has an objective failure" → reject
+
+test("decide (E3): one objective-fail + one uncertainty-only → escalate (not reject)", async () => {
+  // Candidate A: passes verification + rubric SCORE + anti-example,
+  //              fails only on rubric COVERAGE (uncertainty).
+  // Candidate B: fails verification (objective).
+  //
+  // Pre-E3 this rejected because B had an objective failure. E3
+  // escalates because A is still worth a human's call.
+  const sparseRubric = {
+    rubricId: "sparse",
+    version: "v1",
+    summary: "x",
+    criteria: [
+      {
+        id: "R1",
+        title: "passed implies invariants", // heuristic FIRES
+        rationale: "verification",
+        weight: 1,
+      },
+      {
+        id: "R2",
+        title: "subjective taste call", // heuristic does NOT fire
+        rationale: "soft criterion",
+        weight: 9, // dominates totalWeight → coverage = 1/10
+      },
+    ],
+  };
+  const verifierImpl = (opts: { builderId: string }) =>
+    opts.builderId === "A" ? passedVerification("A") : failedVerification("B");
+  const dec = await decide({
+    taskId: "mix",
+    candidates: [candidate("A"), candidate("B")],
+    reviewerFindings: [
+      {
+        builderId: "A",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+      {
+        builderId: "B",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+    ],
+    rubricPath: "/synthetic/sparse.json",
+    loadRubricImpl: () => sparseRubric,
+    loadAntiExampleImpl: () => "",
+    verifierImpl,
+    qualityFloor: 0.5,
+    minRubricCoverage: 0.5, // A's coverage 0.1 fails → uncertainty-only
+  });
+  // KEY: this used to be "reject" pre-E3. The fix ESCALATES because A
+  // is uncertainty-only and could be a real candidate.
+  assert.equal(dec.decision, "escalate_to_human");
+  // The escalation question references the uncertainty-only candidate(s),
+  // not the objective failures.
+  assert.match(dec.escalationQuestion ?? "", /\bA:/);
+  assert.doesNotMatch(dec.escalationQuestion ?? "", /\bB:/);
+});
+
+test("decide (E3): all candidates objective-fail → reject (no uncertainty rescue)", async () => {
+  // B and C both fail verification. No candidate passed objective gates.
+  // E3 still rejects (this case is unchanged from pre-E3).
+  const verifierImpl = () => failedVerification("anybody");
+  const dec = await decide({
+    taskId: "all-bad",
+    candidates: [candidate("B"), candidate("C")],
+    reviewerFindings: [
+      {
+        builderId: "B",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+      {
+        builderId: "C",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+    ],
+    ...COMMON_OPTS,
+    verifierImpl,
+    qualityFloor: 0.5,
+  });
+  assert.equal(dec.decision, "reject");
+  assert.match(dec.rejectionReasons?.join(" ") ?? "", /verification/);
+});
+
+test("decide (E3): single candidate with high-severity finding (uncertainty-only) → escalate", async () => {
+  // Single candidate, passes objective gates, only blocker is a
+  // confirmed high-severity reviewer finding. Pre-Patch-D this
+  // auto-rejected; Patch D escalates it; E3 must keep escalating.
+  const verifierImpl = () => passedVerification("only");
+  const dec = await decide({
+    taskId: "high-sev-only",
+    candidates: [candidate("only")],
+    reviewerFindings: [
+      {
+        builderId: "only",
+        findingsBySeverity: { high: 1 },
+        findingsByCategory: { bug: 1 },
+        reviewCoverage: 1.0,
+      },
+    ],
+    ...COMMON_OPTS,
+    verifierImpl,
+    qualityFloor: 0.5,
+  });
+  assert.equal(dec.decision, "escalate_to_human");
+});
+
+test("decide (E3): mixed — A objective-fail, B passes everything → accept B (no rescue needed)", async () => {
+  // Sanity check: when one candidate is fully eligible, the presence of
+  // another objectively-failing candidate doesn't downgrade to escalate.
+  const verifierImpl = (opts: { builderId: string }) =>
+    opts.builderId === "B" ? passedVerification("B") : failedVerification("A");
+  const dec = await decide({
+    taskId: "one-good-one-bad",
+    candidates: [candidate("A"), candidate("B")],
+    reviewerFindings: [
+      {
+        builderId: "A",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+      {
+        builderId: "B",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+    ],
+    ...COMMON_OPTS,
+    verifierImpl,
+    qualityFloor: 0.5,
+  });
+  assert.equal(dec.decision, "accept");
+  assert.equal(dec.selectedBuilderId, "B");
+});
+
 // --- Patch D: missing anti-example escalation (GPT Pro Issue #6) --------
 
 test("decide: missing anti-example file → escalate (config error, not silent skip)", async () => {

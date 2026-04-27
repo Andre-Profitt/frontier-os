@@ -312,22 +312,31 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
     decision = "escalate_to_human";
     escalationQuestion = `arbiter could not load ${missingAntiExamplePaths.length} configured anti-example file(s): ${missingAntiExamplePaths.join(", ")}. Fix paths or re-run with corrected --anti-examples.`;
   } else if (eligible.length === 0) {
-    // Distinguish objective failure (reject) from uncertainty (escalate).
-    // Objective failure: at least one candidate's only blocker is
-    // verification or rubric SCORE. Uncertainty: blockers are coverage,
-    // confirmed high-severity finding, or anti-example match (which
-    // might be a true positive worth a human's call).
-    const objectiveFailures = eligibility.filter(
+    // Reject vs escalate (Patch E3 / GPT Pro second-pass blocker #1):
+    // Pre-E3, "any candidate has an objective failure" → whole-run
+    // reject. That threw away viable uncertainty-only candidates: if
+    // candidate B failed verification but candidate A only failed
+    // rubric COVERAGE, A is still worth a human's eye.
+    //
+    // E3 rule: if ANY candidate passed every objective gate (verPassed
+    // && rubricScoreOk && antiExampleGateOk) and failed only on
+    // uncertainty (rubric coverage, review coverage, or a confirmed
+    // high-severity finding that might be a true positive), escalate.
+    // Reject only when EVERY candidate has at least one objective
+    // failure.
+    const uncertaintyOnly = eligibility.filter(
       (e) =>
-        !e.verPassed ||
-        !e.rubricScoreOk ||
-        (!e.antiExampleGateOk && missingAntiExamplePaths.length === 0),
+        e.verPassed &&
+        e.rubricScoreOk &&
+        e.antiExampleGateOk &&
+        (!e.rubricCoverageOk ||
+          !e.reviewCoverageOk ||
+          !e.noConfirmedHighSeverityIssue),
     );
-    const onlyUncertainty = objectiveFailures.length === 0;
-    if (onlyUncertainty) {
+    if (uncertaintyOnly.length > 0) {
       decision = "escalate_to_human";
       escalationQuestion = collectEscalationReasons(
-        eligibility,
+        uncertaintyOnly,
         qualityFloor,
         minRubricCoverage,
         minReviewCoverage,
