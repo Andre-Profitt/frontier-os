@@ -252,3 +252,45 @@ test("markHumanDecision: empty reason fails schema validation", () => {
     );
   });
 });
+
+// Q2-B2 fix: schema (not just JS guard) enforces acceptedBuilderId when
+// decision=accepted. Pin both layers to prevent silent integrity holes
+// if a future caller writes events without going through markHumanDecision.
+test("markHumanDecision: empty acceptedBuilderId fails schema (minLength: 1)", () => {
+  withTempDirs((ledgerDir) => {
+    assert.throws(
+      () =>
+        markHumanDecision(
+          {
+            taskId: "t1",
+            decision: "accepted",
+            acceptedBuilderId: "",
+            reason: "x",
+          },
+          { ledgerDir },
+        ),
+      QualityLedgerError,
+    );
+  });
+});
+
+// Q2-B3 fix: synthetic packetId + eventId use crypto.randomUUID, so
+// many parallel marks on the same task in the same millisecond produce
+// distinct events.
+test("markHumanDecision: 100 parallel marks on same task produce distinct event/packet IDs", () => {
+  withTempDirs((ledgerDir) => {
+    const fixedNow = () => 1714060800000;
+    const eventIds = new Set<string>();
+    const packetIds = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      const r = markHumanDecision(
+        { taskId: "t-parallel", decision: "rejected", reason: "x" },
+        { ledgerDir, dryRun: true, now: fixedNow },
+      );
+      eventIds.add(r.event.eventId);
+      packetIds.add(r.event.packetId);
+    }
+    assert.equal(eventIds.size, 100);
+    assert.equal(packetIds.size, 100);
+  });
+});

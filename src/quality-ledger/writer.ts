@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { appendFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 import type { ArbiterDecision } from "../arbiter/types.ts";
 import type {
@@ -444,12 +445,14 @@ export function markHumanDecision(
 
   // Synthetic packetId when the caller didn't link to an orchestration.
   // Operators may want to mark a decision before/without running the
-  // orchestrator (e.g. a hand-applied patch).
+  // orchestrator (e.g. a hand-applied patch). Use crypto.randomUUID so
+  // two operators marking the same task in the same millisecond cannot
+  // collide.
   const ts = new Date(now()).toISOString();
-  if (!packetId) packetId = `manual-${input.taskId}-${ts}`;
+  if (!packetId) packetId = `manual-${input.taskId}-${randomUUID()}`;
 
   const event: import("./types.ts").HumanDecisionEvent = {
-    eventId: `${packetId}-hd-${Math.random().toString(36).slice(2, 8)}`,
+    eventId: `${packetId}-hd-${randomUUID()}`,
     taskId: input.taskId,
     packetId,
     ts,
