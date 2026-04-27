@@ -15,7 +15,8 @@
 // The broker is injected so tests can use a stub. Production callers
 // build a default broker once and reuse it.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 
 import type { InferenceBroker } from "../inference/broker.ts";
 import { loadPromptTemplate, loadSkill, type Skill } from "../skills/loader.ts";
@@ -130,6 +131,15 @@ export interface ReviewSwarmInput {
   loadSkillImpl?: (taskClass: string) => Skill | null;
   // Test seam: load the SKILL.md prose body. Default: loadPromptTemplate(skill).
   loadPromptTemplateImpl?: (skill: Skill) => string;
+  // Patch W: load anti-example file content for the reviewer's
+  // {{antiExampleCorpus}} slot. The skill declares antiExample paths
+  // in skill.json; the swarm reads each and renders the contents into
+  // the reviewer prompt so the reviewer can pattern-match against
+  // known failure modes instead of being told to "cite anti-examples"
+  // without ever seeing them. Default reads from cwd-relative paths
+  // (production CLI runs from repo root). Tests stub this to avoid
+  // file I/O.
+  loadAntiExampleImpl?: (path: string) => string;
   // Test seam.
   now?: () => number;
 }
@@ -166,6 +176,7 @@ export async function runReviewSwarm(
 
   const loadSkillFn = input.loadSkillImpl ?? loadSkill;
   const loadTemplateFn = input.loadPromptTemplateImpl ?? loadPromptTemplate;
+  const loadAntiExampleFn = input.loadAntiExampleImpl ?? defaultLoadAntiExample;
 
   const skill = loadSkillFn(taskClass);
   if (!skill) {
@@ -174,6 +185,16 @@ export async function runReviewSwarm(
     );
   }
   const promptTemplate = loadTemplateFn(skill);
+  // Patch W: load all anti-example contents declared in the skill so
+  // the {{antiExampleCorpus}} slot has real material for the reviewer
+  // to pattern-match against. A failed load (missing file, bad
+  // permissions) doesn't crash the swarm — the entry surfaces with a
+  // marker so the operator notices on the next run without losing
+  // the orchestration.
+  const antiExampleCorpus = formatAntiExampleCorpus(
+    skill.antiExamples,
+    loadAntiExampleFn,
+  );
 
   const t0 = now();
 
@@ -202,6 +223,12 @@ export async function runReviewSwarm(
         // string still substitutes cleanly so the literal placeholder
         // `{{builderVerificationRecord}}` never reaches the model.
         builderVerificationRecord: input.builderVerificationRecord ?? "",
+        // Patch W: corpus of declared anti-example contents. The
+        // skill names them in skill.json; we load each and inline
+        // the content so the reviewer can pattern-match against
+        // known failure modes. Empty string when the skill declares
+        // no anti-examples.
+        antiExampleCorpus,
       });
       try {
         const callRes = await deps.broker.callClass({
@@ -467,4 +494,52 @@ function newPacketId(nowMs: number): string {
   const ts = Math.floor(nowMs / 1000).toString(36);
   const rand = Math.random().toString(36).slice(2, 8);
   return `review-${ts}-${rand}`;
+}
+
+// --- Patch W: anti-example corpus -----------------------------------------
+
+// Default loader: reads from cwd-relative paths. Production CLI runs
+// from the repo root so paths like "taste/anti_examples/foo.md"
+// resolve directly. Throws on missing file (the operator should know
+// their skill.json points at a deleted file).
+function defaultLoadAntiExample(path: string): string {
+  const abs = resolvePath(path);
+  if (!existsSync(abs)) {
+    throw new Error(`anti-example not found at ${abs}`);
+  }
+  return readFileSync(abs, "utf8");
+}
+
+// Format declared anti-example paths into a single corpus string for
+// the reviewer prompt's {{antiExampleCorpus}} slot. Loader failure on
+// any single entry surfaces as an inline marker (`could not load`)
+// rather than aborting the swarm — a stale skill.json shouldn't kill
+// orchestrations.
+//
+// Format:
+//   ## <path-1>
+//   <content-1>
+//
+//   ---
+//
+//   ## <path-2>
+//   <content-2>
+export function formatAntiExampleCorpus(
+  paths: ReadonlyArray<string>,
+  loader: (path: string) => string,
+): string {
+  if (paths.length === 0) return "";
+  const blocks: string[] = [];
+  for (const p of paths) {
+    let content: string;
+    try {
+      content = loader(p);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      blocks.push(`## ${p}\n\n(could not load: ${msg})`);
+      continue;
+    }
+    blocks.push(`## ${p}\n\n${content.trim()}`);
+  }
+  return blocks.join("\n\n---\n\n");
 }

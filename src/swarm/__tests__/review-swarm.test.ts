@@ -333,6 +333,142 @@ test("runReviewSwarm: broker rejection surfaces as ok=false reviewer", async () 
   assert.match(failed?.errorMessage ?? "", /broker rejected/);
 });
 
+// --- Patch W: anti-example corpus surfaced to reviewer prompt ---------
+
+test("runReviewSwarm (Patch W): skill.antiExamples are loaded and rendered into prompt", async () => {
+  // Pre-Patch-W, the reviewer skill declared antiExample paths in
+  // skill.json but the orchestrator/swarm never loaded their CONTENT
+  // into the reviewer prompt — reviewers were told to "cite anti-
+  // examples" without ever seeing them. Patch W loads the contents
+  // and renders them via the new {{antiExampleCorpus}} slot, so the
+  // reviewer can actually pattern-match against known failure modes.
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(0) });
+  const TEMPLATE_WITH_SLOT =
+    "Diff:\n{{diff}}\n\nAnti-examples:\n{{antiExampleCorpus}}";
+  let capturedPrompt = "";
+  const originalCallClass = broker.callClass.bind(broker);
+  broker.callClass = async (opts) => {
+    const msg = opts.messages?.[0];
+    if (msg && typeof msg.content === "string") capturedPrompt = msg.content;
+    return originalCallClass(opts);
+  };
+  const skillWithAntiExamples = {
+    ...syntheticSkill(),
+    antiExamples: [
+      "taste/anti_examples/false_green_repair.md",
+      "taste/anti_examples/narrow_alert_filter.md",
+    ],
+  };
+  const fakeContents: Record<string, string> = {
+    "taste/anti_examples/false_green_repair.md":
+      "# False green\n\nTests passed but didn't exercise the changed code.",
+    "taste/anti_examples/narrow_alert_filter.md":
+      "# Narrow alert filter\n\nFilter only matched the new emitter.",
+  };
+  await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      loadSkillImpl: () => skillWithAntiExamples,
+      loadPromptTemplateImpl: () => TEMPLATE_WITH_SLOT,
+      loadAntiExampleImpl: (path: string) => {
+        const content = fakeContents[path];
+        if (content === undefined) throw new Error(`unexpected path: ${path}`);
+        return content;
+      },
+    },
+  );
+  // Both anti-examples appear in the prompt with their paths.
+  assert.match(capturedPrompt, /false_green_repair\.md/);
+  assert.match(capturedPrompt, /Tests passed but didn't exercise/);
+  assert.match(capturedPrompt, /narrow_alert_filter\.md/);
+  assert.match(capturedPrompt, /Filter only matched/);
+  // No literal placeholder leaked.
+  assert.doesNotMatch(capturedPrompt, /\{\{antiExampleCorpus\}\}/);
+});
+
+test("runReviewSwarm (Patch W): empty skill.antiExamples → empty corpus slot (regression)", async () => {
+  // Skills without anti-examples (e.g. early-stage classes) should
+  // render an empty slot — the literal `{{antiExampleCorpus}}` must
+  // NOT leak into the prompt.
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(0) });
+  const TEMPLATE_WITH_SLOT =
+    "Diff:\n{{diff}}\n\nAnti-examples:\n{{antiExampleCorpus}}";
+  let capturedPrompt = "";
+  const originalCallClass = broker.callClass.bind(broker);
+  broker.callClass = async (opts) => {
+    const msg = opts.messages?.[0];
+    if (msg && typeof msg.content === "string") capturedPrompt = msg.content;
+    return originalCallClass(opts);
+  };
+  await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      loadSkillImpl: () => syntheticSkill(), // antiExamples = []
+      loadPromptTemplateImpl: () => TEMPLATE_WITH_SLOT,
+      // loadAntiExampleImpl omitted — should not be called when paths empty
+    },
+  );
+  assert.doesNotMatch(capturedPrompt, /\{\{antiExampleCorpus\}\}/);
+  assert.match(capturedPrompt, /Anti-examples:\s*$/);
+});
+
+test("runReviewSwarm (Patch W): loader failure on one anti-example does NOT crash the swarm", async () => {
+  // Resilience pin: a missing/unreadable anti-example file should
+  // skip that entry with a marker rather than crash the whole review.
+  // This keeps a stale skill.json from breaking orchestrations until
+  // an operator notices.
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(0) });
+  const TEMPLATE_WITH_SLOT =
+    "Diff:\n{{diff}}\n\nAnti-examples:\n{{antiExampleCorpus}}";
+  let capturedPrompt = "";
+  const originalCallClass = broker.callClass.bind(broker);
+  broker.callClass = async (opts) => {
+    const msg = opts.messages?.[0];
+    if (msg && typeof msg.content === "string") capturedPrompt = msg.content;
+    return originalCallClass(opts);
+  };
+  const skillWithAntiExamples = {
+    ...syntheticSkill(),
+    antiExamples: [
+      "taste/anti_examples/exists.md",
+      "taste/anti_examples/missing.md",
+    ],
+  };
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      loadSkillImpl: () => skillWithAntiExamples,
+      loadPromptTemplateImpl: () => TEMPLATE_WITH_SLOT,
+      loadAntiExampleImpl: (path: string) => {
+        if (path.endsWith("missing.md")) {
+          throw new Error("ENOENT");
+        }
+        return "# Exists\n\ncontent";
+      },
+    },
+  );
+  // Swarm completed despite the loader error.
+  assert.equal(packet.reviewerCount, 1);
+  // The valid anti-example renders normally.
+  assert.match(capturedPrompt, /exists\.md/);
+  assert.match(capturedPrompt, /content/);
+  // The missing one is skipped with a clear marker.
+  assert.match(capturedPrompt, /missing\.md/);
+  assert.match(capturedPrompt, /could not load/i);
+});
+
 // --- Patch V: builderVerificationRecord pass-through to reviewer prompt --
 
 test("runReviewSwarm (Patch V): builderVerificationRecord input is rendered into reviewer prompt", async () => {

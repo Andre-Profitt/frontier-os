@@ -273,6 +273,13 @@ export async function runOrchestration(
         ...(deps.loadPromptTemplateImpl !== undefined
           ? { loadPromptTemplateImpl: deps.loadPromptTemplateImpl }
           : {}),
+        // Patch W: forward the anti-example loader so the reviewer
+        // prompt's {{antiExampleCorpus}} slot has real content. Same
+        // implementation already used by the arbiter — sharing it
+        // keeps anti-example surfacing consistent across both stages.
+        ...(deps.loadAntiExampleImpl !== undefined
+          ? { loadAntiExampleImpl: deps.loadAntiExampleImpl }
+          : {}),
         ...(deps.now !== undefined ? { now: deps.now } : {}),
       },
     );

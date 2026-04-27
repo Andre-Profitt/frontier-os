@@ -56,11 +56,14 @@ Diff under review:
 Builder's claimed verification:
 {{builderVerificationRecord}}
 
+Anti-example corpus (known failure modes — pattern-match the diff against these):
+{{antiExampleCorpus}}
+
 Constraints:
 - Do not propose fixes.
 - Categorize each finding: bug | contract_violation | false_green | risk | style.
 - Cite file:line for every concrete claim.
-- Cite taste/anti_examples/<name>.md when the patch reproduces a known pattern.
+- Cite taste/anti_examples/<name>.md when the patch reproduces a known pattern listed above.
 - If you find no defects, say "no defects surfaced" and explain what you checked.
 
 Deliverable (JSON):
