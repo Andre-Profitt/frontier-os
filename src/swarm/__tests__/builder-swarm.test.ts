@@ -986,6 +986,140 @@ test("runBuilderSwarm: non-empty touchList ignores allowUnscopedDiff (gate runs 
   }
 });
 
+// --- Patch V: builder self-verification populates builderVerification --
+
+test("runBuilderSwarm (Patch V): typecheckCommand runs in worktree and exit code lands on candidate", async () => {
+  // Pre-Patch-V, candidate.builderVerification was always undefined
+  // (the field existed in the type but was never populated). Reviewer
+  // template's {{builderVerificationRecord}} therefore always rendered
+  // empty. Now the builder swarm runs typecheck (and optionally test)
+  // commands inside the worktree and stores exit codes on the
+  // candidate so the orchestrator can format them into the reviewer
+  // prompt.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    // Stub verifierImpl returns deterministic exit codes — keeps the
+    // test fast (real `npm run typecheck` would take seconds) and
+    // hermetic (no dependency on the test repo having a tsconfig).
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "verify-pass",
+        taskDescription: "x",
+        builderCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        typecheckCommand: ["echo", "typecheck-stub"],
+        testCommand: ["echo", "test-stub"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: "/tmp/stub",
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-27T00:00:00.000Z",
+        }),
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "collected");
+    assert.ok(c?.builderVerification, "expected builderVerification populated");
+    assert.equal(c?.builderVerification?.typecheckExitCode, 0);
+    assert.equal(c?.builderVerification?.testExitCode, 0);
+    assert.equal(c?.builderVerification?.ranAt, "2026-04-27T00:00:00.000Z");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch V): no typecheck/test commands → builderVerification stays undefined (regression)", async () => {
+  // When the orchestrator doesn't ask for self-verification, the
+  // builder must not invent it. Preserves the prior default behavior.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "no-verify",
+        taskDescription: "x",
+        builderCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        // typecheckCommand / testCommand omitted
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "collected");
+    assert.equal(c?.builderVerification, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch V): typecheck failure recorded on candidate but phase stays 'collected' (verification is informational)", async () => {
+  // Builder verification is informational — it tells the reviewer
+  // what the builder *claims*. The arbiter's verifier independently
+  // re-runs verification later. So a failed self-verification doesn't
+  // fail the candidate; phase remains collected.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "verify-fail",
+        taskDescription: "x",
+        builderCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        typecheckCommand: ["echo", "stub"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: "/tmp/stub",
+          phase: "typecheck_failed" as const,
+          typecheckExitCode: 1,
+          ranAt: "2026-04-27T00:00:00.000Z",
+        }),
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "collected", "verification doesn't change phase");
+    assert.equal(c?.ok, true);
+    assert.equal(c?.builderVerification?.typecheckExitCode, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 // --- Patch R blocker #1: S/R pre-scope check (no worktree mutation) ----
 
 test("runBuilderSwarm: out-of-scope S/R block → scope_rejected BEFORE apply (worktree NOT mutated)", async () => {

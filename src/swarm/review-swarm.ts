@@ -117,6 +117,15 @@ export interface ReviewSwarmInput {
   // which defeats the policy's "diversity matters more than raw
   // quality" comment on adversarial_review).
   reviewerModelKeys?: string[];
+  // Patch V: structured record of the builder's self-verification —
+  // typecheck/test exit codes captured by the builder swarm and
+  // formatted by the orchestrator. Renders into the reviewer prompt's
+  // {{builderVerificationRecord}} slot. Pre-Patch-V this was always
+  // empty because the orchestrator didn't extract it; reviewers
+  // therefore couldn't cross-check the builder's claimed exit codes
+  // against the diff content, contributing to false-positive bug
+  // findings. When undefined, falls back to "" (legacy behavior).
+  builderVerificationRecord?: string;
   // Test seam: load a Skill instead of going to disk. Default: loadSkill(taskClass).
   loadSkillImpl?: (taskClass: string) => Skill | null;
   // Test seam: load the SKILL.md prose body. Default: loadPromptTemplate(skill).
@@ -186,12 +195,13 @@ export async function runReviewSwarm(
         reviewerCount: String(reviewerCount),
         patchId,
         taskId: input.taskId ?? "",
-        // Patch L: orchestrator doesn't currently extract the builder's
-        // verification record out of their rawText (it's free-form).
-        // Pass empty string so the prompt slot doesn't render as a
-        // literal `{{builderVerificationRecord}}`. Wiring the real
-        // record through is a tracked follow-up.
-        builderVerificationRecord: "",
+        // Patch V: pass the orchestrator-formatted verification record
+        // through to the reviewer prompt. Falls back to "" when the
+        // caller didn't supply one (e.g. tests that exercise the swarm
+        // in isolation, or pre-Patch-V orchestrator paths). Empty
+        // string still substitutes cleanly so the literal placeholder
+        // `{{builderVerificationRecord}}` never reaches the model.
+        builderVerificationRecord: input.builderVerificationRecord ?? "",
       });
       try {
         const callRes = await deps.broker.callClass({

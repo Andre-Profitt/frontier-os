@@ -30,6 +30,7 @@ import { ModelRegistry, type ClassGates } from "../inference/model-registry.ts";
 import {
   runBuilderSwarm,
   type BuilderSwarmPacket,
+  type CandidatePatch,
 } from "../swarm/builder-swarm.ts";
 import { runReviewSwarm, type ReviewPacket } from "../swarm/review-swarm.ts";
 import {
@@ -185,11 +186,27 @@ export async function runOrchestration(
       ...(input.builderModelKeys !== undefined
         ? { modelKeys: input.builderModelKeys }
         : {}),
+      // Patch V: forward typecheck/test commands so the builder swarm
+      // populates candidate.builderVerification. The reviewer prompt
+      // then sees the builder's claimed exit codes; the arbiter
+      // independently re-verifies later (defense in depth).
+      ...(input.typecheckCommand !== undefined
+        ? { typecheckCommand: input.typecheckCommand }
+        : {}),
+      ...(input.testCommand !== undefined
+        ? { testCommand: input.testCommand }
+        : {}),
       ...(deps.loadSkillImpl !== undefined
         ? { loadSkillImpl: deps.loadSkillImpl }
         : {}),
       ...(deps.loadPromptTemplateImpl !== undefined
         ? { loadPromptTemplateImpl: deps.loadPromptTemplateImpl }
+        : {}),
+      // Patch V: reuse the operator-supplied verifierImpl for builder
+      // self-verification too. Tests already inject one for the
+      // arbiter; sharing it keeps test fixtures small.
+      ...(deps.verifierImpl !== undefined
+        ? { verifierImpl: deps.verifierImpl }
         : {}),
       ...(deps.now !== undefined ? { now: deps.now } : {}),
     },
@@ -228,6 +245,13 @@ export async function runOrchestration(
   const reviewPackets: Array<{ builderId: string; packet: ReviewPacket }> = [];
   const reviewPacketPaths: Array<{ builderId: string; path: string }> = [];
   for (const candidate of collectedCandidates) {
+    // Patch V: format the builder's self-verification exit codes
+    // into a prompt-ready string so reviewers can cross-check the
+    // builder's claim against the diff. Empty string when the
+    // builder didn't run verification (no typecheck/test commands).
+    const builderVerificationRecord = formatBuilderVerificationRecord(
+      candidate.builderVerification,
+    );
     const rp = await runReviewSwarm(
       { broker: deps.broker },
       {
@@ -239,6 +263,9 @@ export async function runOrchestration(
         taskId: input.taskId,
         ...(reviewerModelKeys && reviewerModelKeys.length > 0
           ? { reviewerModelKeys }
+          : {}),
+        ...(builderVerificationRecord !== ""
+          ? { builderVerificationRecord }
           : {}),
         ...(deps.loadSkillImpl !== undefined
           ? { loadSkillImpl: deps.loadSkillImpl }
@@ -478,6 +505,43 @@ async function loadClassGates(
   } catch {
     return undefined;
   }
+}
+
+// Patch V: format CandidatePatch.builderVerification into a string
+// for the reviewer prompt's {{builderVerificationRecord}} slot. Empty
+// string when the builder didn't run verification (no typecheck/test
+// commands supplied) — caller treats empty as "skip the slot."
+//
+// Format example (both phases ran, both passed):
+//   typecheck: exit_code=0 (passed)
+//   tests: exit_code=0 (passed)
+//   ran_at: 2026-04-27T...
+//
+// When typecheck failed:
+//   typecheck: exit_code=1 (failed)
+//   tests: not_run
+//   ran_at: 2026-04-27T...
+export function formatBuilderVerificationRecord(
+  v: CandidatePatch["builderVerification"],
+): string {
+  if (!v) return "";
+  const lines: string[] = [];
+  if (v.typecheckExitCode !== undefined) {
+    const verdict = v.typecheckExitCode === 0 ? "passed" : "failed";
+    lines.push(`typecheck: exit_code=${v.typecheckExitCode} (${verdict})`);
+  } else {
+    lines.push("typecheck: not_run");
+  }
+  if (v.testExitCode !== undefined) {
+    const verdict = v.testExitCode === 0 ? "passed" : "failed";
+    lines.push(`tests: exit_code=${v.testExitCode} (${verdict})`);
+  } else {
+    lines.push("tests: not_run");
+  }
+  if (v.ranAt !== undefined) {
+    lines.push(`ran_at: ${v.ranAt}`);
+  }
+  return lines.join("\n");
 }
 
 // Patch P: load the policy class's effectively-enabled model keys for

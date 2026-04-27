@@ -333,6 +333,77 @@ test("runReviewSwarm: broker rejection surfaces as ok=false reviewer", async () 
   assert.match(failed?.errorMessage ?? "", /broker rejected/);
 });
 
+// --- Patch V: builderVerificationRecord pass-through to reviewer prompt --
+
+test("runReviewSwarm (Patch V): builderVerificationRecord input is rendered into reviewer prompt", async () => {
+  // Pre-Patch-V the reviewer template's {{builderVerificationRecord}}
+  // slot was always empty — the orchestrator didn't extract the
+  // builder's verification data. Now the orchestrator can pass a
+  // structured record (formatted from candidate.builderVerification)
+  // and reviewers actually see what the builder claimed.
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(0) });
+  // Capture the rendered prompt by stubbing loadPromptTemplate.
+  const TEMPLATE_WITH_SLOT =
+    "Diff:\n{{diff}}\n\nVerification:\n{{builderVerificationRecord}}";
+  let capturedPrompt = "";
+  const originalCallClass = broker.callClass.bind(broker);
+  broker.callClass = async (opts) => {
+    const msg = opts.messages?.[0];
+    if (msg && typeof msg.content === "string") capturedPrompt = msg.content;
+    return originalCallClass(opts);
+  };
+  const verificationRecord =
+    "typecheck: exit_code=0 (passed)\ntests: exit_code=0 (passed)\nran_at: 2026-04-27T00:00:00.000Z";
+  await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      builderVerificationRecord: verificationRecord,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE_WITH_SLOT,
+    },
+  );
+  assert.match(capturedPrompt, /typecheck: exit_code=0/);
+  assert.match(capturedPrompt, /tests: exit_code=0/);
+  // Slot is fully substituted — no literal `{{builderVerificationRecord}}` left.
+  assert.doesNotMatch(capturedPrompt, /\{\{builderVerificationRecord\}\}/);
+});
+
+test("runReviewSwarm (Patch V): builderVerificationRecord undefined → empty string substituted (regression)", async () => {
+  // Backwards compatible: callers that don't pass the new field still
+  // get the prior behavior — slot renders empty rather than leaking
+  // the literal `{{builderVerificationRecord}}` into the prompt.
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: deliverable(0) });
+  const TEMPLATE_WITH_SLOT =
+    "Diff:\n{{diff}}\n\nVerification:\n{{builderVerificationRecord}}";
+  let capturedPrompt = "";
+  const originalCallClass = broker.callClass.bind(broker);
+  broker.callClass = async (opts) => {
+    const msg = opts.messages?.[0];
+    if (msg && typeof msg.content === "string") capturedPrompt = msg.content;
+    return originalCallClass(opts);
+  };
+  await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      // builderVerificationRecord omitted
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE_WITH_SLOT,
+    },
+  );
+  // Slot substituted with empty string — no literal placeholder visible.
+  assert.doesNotMatch(capturedPrompt, /\{\{builderVerificationRecord\}\}/);
+  // The "Verification:" label is present but followed by empty content.
+  assert.match(capturedPrompt, /Verification:\n\s*$/);
+});
+
 // --- Patch R blocker #3: pinned reviewer modelKey on failure ----
 
 test("runReviewSwarm (Patch R): pinned reviewer + broker rejection → modelKey=pinnedModelKey on failed run", async () => {

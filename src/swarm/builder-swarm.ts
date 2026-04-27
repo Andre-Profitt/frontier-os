@@ -34,6 +34,7 @@ import {
   checkDiffScope,
   checkSearchReplaceScope,
 } from "./diff-scope-checker.ts";
+import { verifyCandidate } from "../arbiter/verifier.ts";
 import {
   parseSearchReplaceBlocks,
   applySearchReplaceBlocks,
@@ -91,10 +92,21 @@ export interface BuilderSwarmInput {
   // controls per-builder modelKey assignment. Length should equal
   // builderCount; shorter lists wrap.
   modelKeys?: string[];
+  // Patch V: builder self-verification commands. When either is set,
+  // the builder swarm runs them inside the worktree AFTER commit and
+  // populates `candidate.builderVerification` with exit codes + ranAt
+  // so the reviewer prompt can show what the builder claims (the
+  // arbiter independently re-verifies later). Both default to
+  // undefined → no verification (prior behavior preserved).
+  typecheckCommand?: string[] | null;
+  testCommand?: string[] | null;
   // Test seams.
   loadSkillImpl?: (taskClass: string) => Skill | null;
   loadPromptTemplateImpl?: (skill: Skill) => string;
   now?: () => number;
+  // Patch V test seam: inject the verifier so tests don't need a real
+  // tsconfig + node_modules in the synthetic worktree.
+  verifierImpl?: typeof verifyCandidate;
   // Inject a custom git runner for the apply/commit steps. Defaults to
   // the same defaultGitRunner the WorktreeManager uses.
   exec?: GitRunner;
@@ -184,6 +196,15 @@ export async function runBuilderSwarm(
         taskClass,
         builderCount,
         ...(pinnedModelKey !== undefined ? { pinnedModelKey } : {}),
+        ...(input.typecheckCommand !== undefined
+          ? { typecheckCommand: input.typecheckCommand }
+          : {}),
+        ...(input.testCommand !== undefined
+          ? { testCommand: input.testCommand }
+          : {}),
+        ...(input.verifierImpl !== undefined
+          ? { verifierImpl: input.verifierImpl }
+          : {}),
         now,
         exec,
         tStart,
@@ -233,6 +254,12 @@ interface RunOneBuilderInput {
   taskClass: string;
   builderCount: number;
   pinnedModelKey?: string;
+  // Patch V: self-verification commands threaded through from
+  // BuilderSwarmInput. When either is set, run after commit to
+  // populate candidate.builderVerification.
+  typecheckCommand?: string[] | null;
+  testCommand?: string[] | null;
+  verifierImpl?: typeof verifyCandidate;
   now: () => number;
   exec: GitRunner;
   tStart: number;
@@ -569,6 +596,41 @@ async function runOneBuilder(
     };
   }
 
+  // ---- 8. self-verification (Patch V) ----
+  // Runs typecheck/test inside the worktree and stores exit codes
+  // on the candidate so the orchestrator can format a structured
+  // verification record for the reviewer prompt's
+  // {{builderVerificationRecord}} slot. Strictly informational —
+  // verification failures do NOT change candidate.phase or candidate.ok.
+  // The arbiter independently re-verifies later (defense in depth).
+  // Skipped when neither command is set, preserving the prior
+  // behavior for callers that don't ask for self-verification.
+  let builderVerification: CandidatePatch["builderVerification"];
+  const verifierFn = input.verifierImpl ?? verifyCandidate;
+  const wantsVerification =
+    input.typecheckCommand !== undefined || input.testCommand !== undefined;
+  if (wantsVerification) {
+    const result = verifierFn({
+      builderId,
+      worktreePath: run.worktreePath,
+      ...(input.typecheckCommand !== undefined
+        ? { typecheckCommand: input.typecheckCommand }
+        : {}),
+      ...(input.testCommand !== undefined
+        ? { testCommand: input.testCommand }
+        : {}),
+    });
+    builderVerification = {
+      ...(result.typecheckExitCode !== undefined
+        ? { typecheckExitCode: result.typecheckExitCode }
+        : {}),
+      ...(result.testExitCode !== undefined
+        ? { testExitCode: result.testExitCode }
+        : {}),
+      ...(result.ranAt !== undefined ? { ranAt: result.ranAt } : {}),
+    };
+  }
+
   return {
     builderId,
     modelKey,
@@ -579,6 +641,7 @@ async function runOneBuilder(
     elapsedMs: now() - tStart,
     rawText,
     ...(collected.patch ? { patch: collected.patch } : {}),
+    ...(builderVerification !== undefined ? { builderVerification } : {}),
   };
 }
 

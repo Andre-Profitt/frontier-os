@@ -154,6 +154,11 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
     taskClass: string;
     modelOverride: string | undefined;
   }> = [];
+  // Patch V: capture the rendered prompt content per call so
+  // integration tests can assert that orchestrator-supplied template
+  // variables (e.g. builderVerificationRecord) reach the model. Empty
+  // when message content is not a plain string.
+  public promptLog: Array<{ taskClass: string; content: string }> = [];
 
   enqueueFor(taskClass: string, ...responses: StubResponse[]): void {
     const arr = this.byClass.get(taskClass) ?? [];
@@ -169,6 +174,11 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
     this.callLog.push({
       taskClass: opts.taskClass,
       modelOverride: opts.modelOverride,
+    });
+    const msgContent = opts.messages?.[0]?.content;
+    this.promptLog.push({
+      taskClass: opts.taskClass,
+      content: typeof msgContent === "string" ? msgContent : "",
     });
     const queue = this.byClass.get(opts.taskClass) ?? [];
     const next = queue.shift() ?? this.defaultByClass.get(opts.taskClass);
@@ -824,6 +834,161 @@ test("runOrchestration: context pack failure is non-fatal — error file written
   } finally {
     cleanup();
   }
+});
+
+// --- Patch V: end-to-end builderVerificationRecord wiring -------------
+
+test("runOrchestration (Patch V): typecheckCommand → builder runs verifier → reviewer prompt sees formatted record", async () => {
+  // End-to-end pin: the orchestrator forwards typecheckCommand to
+  // the builder swarm; the builder runs the verifier (here a stub);
+  // the candidate's builderVerification is formatted; the reviewer
+  // prompt contains the formatted string.
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        // Reviewer template includes the verification slot so we can
+        // assert end-to-end rendering.
+        loadSkillImpl: (tc: string) => syntheticSkill(tc),
+        loadPromptTemplateImpl: (skill: Skill) =>
+          skill.taskClass === "patch_builder"
+            ? TEMPLATE_BUILDER
+            : "R {{reviewerId}} verification: {{builderVerificationRecord}}",
+        loadRubricImpl: () => syntheticRubric(),
+        loadAntiExampleImpl: () => "",
+        // verifierImpl is shared between builder self-verification
+        // (Patch V) and arbiter re-verification.
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-27T12:00:00.000Z",
+        }),
+      },
+      {
+        taskId: "patch-v-e2e",
+        taskDescription: "x",
+        builderCount: 1,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        // Setting either command opts the builder into self-verification.
+        typecheckCommand: ["echo", "stub-typecheck"],
+        testCommand: ["echo", "stub-test"],
+        qualityFloor: 0.5,
+      },
+    );
+    const reviewerPrompts = broker.promptLog.filter(
+      (p) => p.taskClass === "adversarial_review",
+    );
+    assert.ok(reviewerPrompts.length > 0, "expected reviewer call");
+    const prompt = reviewerPrompts[0]!.content;
+    assert.match(prompt, /typecheck: exit_code=0 \(passed\)/);
+    assert.match(prompt, /tests: exit_code=0 \(passed\)/);
+    assert.match(prompt, /ran_at: 2026-04-27T12:00:00\.000Z/);
+    // Slot fully substituted — no literal placeholder leaked.
+    assert.doesNotMatch(prompt, /\{\{builderVerificationRecord\}\}/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runOrchestration (Patch V): no typecheck/test commands → reviewer prompt slot stays empty (regression)", async () => {
+  // When the operator doesn't ask for self-verification, the
+  // reviewer prompt's verification slot renders empty. The literal
+  // `{{builderVerificationRecord}}` must NOT leak into the prompt.
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        loadSkillImpl: (tc: string) => syntheticSkill(tc),
+        loadPromptTemplateImpl: (skill: Skill) =>
+          skill.taskClass === "patch_builder"
+            ? TEMPLATE_BUILDER
+            : "R {{reviewerId}} verification: {{builderVerificationRecord}}",
+        loadRubricImpl: () => syntheticRubric(),
+        loadAntiExampleImpl: () => "",
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-27T12:00:00.000Z",
+        }),
+      },
+      {
+        taskId: "patch-v-no-verify",
+        taskDescription: "x",
+        builderCount: 1,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        // typecheckCommand / testCommand omitted → builder skips verification
+        qualityFloor: 0.5,
+      },
+    );
+    const reviewerPrompts = broker.promptLog.filter(
+      (p) => p.taskClass === "adversarial_review",
+    );
+    assert.ok(reviewerPrompts.length > 0);
+    const prompt = reviewerPrompts[0]!.content;
+    assert.doesNotMatch(prompt, /\{\{builderVerificationRecord\}\}/);
+    // Slot empty — "verification: " followed by nothing useful.
+    assert.match(prompt, /verification:\s*$/);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- Patch V: formatBuilderVerificationRecord pure function ----------
+
+test("formatBuilderVerificationRecord: full success", async () => {
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord({
+    typecheckExitCode: 0,
+    testExitCode: 0,
+    ranAt: "2026-04-27T12:00:00.000Z",
+  });
+  assert.match(out, /typecheck: exit_code=0 \(passed\)/);
+  assert.match(out, /tests: exit_code=0 \(passed\)/);
+  assert.match(out, /ran_at: 2026-04-27T12:00:00\.000Z/);
+});
+
+test("formatBuilderVerificationRecord: typecheck failed, tests not run", async () => {
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord({
+    typecheckExitCode: 1,
+    ranAt: "2026-04-27T12:00:00.000Z",
+  });
+  assert.match(out, /typecheck: exit_code=1 \(failed\)/);
+  assert.match(out, /tests: not_run/);
+});
+
+test("formatBuilderVerificationRecord: undefined → empty string", async () => {
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  assert.equal(formatBuilderVerificationRecord(undefined), "");
 });
 
 // --- Patch S non-blocker: requireContextPack=true makes failure fatal --
