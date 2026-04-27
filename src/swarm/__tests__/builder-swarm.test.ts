@@ -986,6 +986,57 @@ test("runBuilderSwarm: non-empty touchList ignores allowUnscopedDiff (gate runs 
   }
 });
 
+// --- Patch X: phase included in builderVerification -------------------
+
+test("runBuilderSwarm (Patch X): verifier phase is captured on builderVerification", async () => {
+  // Patch V captured exit codes + ranAt but dropped the verifier's
+  // `phase` field. Phase carries critical nuance — e.g.
+  // "passed_typecheck_only" vs "passed" — that the reviewer needs
+  // to know whether runtime tests actually executed. Patch X adds
+  // phase to the structure so the formatter (and the reviewer
+  // prompt) can render it.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-x-phase",
+        taskDescription: "x",
+        builderCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        typecheckCommand: ["echo", "stub"],
+        // testCommand omitted → verifier returns "passed_typecheck_only"
+        // (the realistic signal for a typecheck-only run that the
+        // reviewer needs to distinguish from full pass).
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: "/tmp/stub",
+          phase: "passed_typecheck_only" as const,
+          typecheckExitCode: 0,
+          ranAt: "2026-04-27T13:00:00.000Z",
+        }),
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.builderVerification?.phase, "passed_typecheck_only");
+    assert.equal(c?.builderVerification?.typecheckExitCode, 0);
+    assert.equal(c?.builderVerification?.testExitCode, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
 // --- Patch V: builder self-verification populates builderVerification --
 
 test("runBuilderSwarm (Patch V): typecheckCommand runs in worktree and exit code lands on candidate", async () => {

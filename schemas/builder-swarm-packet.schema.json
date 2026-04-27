@@ -92,6 +92,16 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "phase": {
+              "enum": [
+                "passed",
+                "passed_typecheck_only",
+                "typecheck_failed",
+                "tests_failed",
+                "skipped",
+                "worktree_missing"
+              ]
+            },
             "typecheckExitCode": { "type": "integer" },
             "testExitCode": { "type": "integer" },
             "ranAt": { "type": "string", "format": "date-time" }

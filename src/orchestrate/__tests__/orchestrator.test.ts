@@ -991,6 +991,37 @@ test("formatBuilderVerificationRecord: undefined → empty string", async () => 
   assert.equal(formatBuilderVerificationRecord(undefined), "");
 });
 
+test("formatBuilderVerificationRecord (Patch X): phase rendered when present", async () => {
+  // Phase distinguishes passed from passed_typecheck_only — a critical
+  // signal for the reviewer. Format must surface it on a dedicated line.
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord({
+    phase: "passed_typecheck_only",
+    typecheckExitCode: 0,
+    ranAt: "2026-04-27T13:00:00.000Z",
+  });
+  assert.match(out, /phase: passed_typecheck_only/);
+  assert.match(out, /typecheck: exit_code=0 \(passed\)/);
+  assert.match(out, /tests: not_run/);
+});
+
+test("formatBuilderVerificationRecord (Patch X): no phase falls back to exit-code-only output (regression)", async () => {
+  // When phase is undefined (older callers / partial data), the
+  // formatter should still render exit codes — no crash, no literal
+  // "phase: undefined" leaking out.
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord({
+    typecheckExitCode: 0,
+    testExitCode: 0,
+    ranAt: "2026-04-27T13:00:00.000Z",
+  });
+  assert.doesNotMatch(out, /phase:/);
+  assert.match(out, /typecheck: exit_code=0/);
+  assert.match(out, /tests: exit_code=0/);
+});
+
 // --- Patch S non-blocker: requireContextPack=true makes failure fatal --
 
 test("runOrchestration (Patch S): requireContextPack=true → context-pack failure throws OrchestrationError", async () => {

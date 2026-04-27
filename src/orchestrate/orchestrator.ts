@@ -533,6 +533,14 @@ export function formatBuilderVerificationRecord(
 ): string {
   if (!v) return "";
   const lines: string[] = [];
+  // Patch X: phase first when present. Encodes nuance the exit codes
+  // alone can't: "passed_typecheck_only" warns the reviewer that
+  // runtime tests never executed; "skipped" / "worktree_missing"
+  // surface their own distinct signal. Older callers without phase
+  // (or partial data) fall through to the exit-code-only render.
+  if (v.phase !== undefined) {
+    lines.push(`phase: ${v.phase}`);
+  }
   if (v.typecheckExitCode !== undefined) {
     const verdict = v.typecheckExitCode === 0 ? "passed" : "failed";
     lines.push(`typecheck: exit_code=${v.typecheckExitCode} (${verdict})`);

@@ -63,6 +63,19 @@ export interface CandidatePatch {
   rawText?: string;
   patch?: BuilderPatch;
   builderVerification?: {
+    // Patch X: capture the verifier's phase verdict alongside raw
+    // exit codes. Phase carries nuance the exit codes alone don't:
+    // "passed_typecheck_only" tells the reviewer that runtime tests
+    // never executed (so dynamic-behavior claims are unverified);
+    // "skipped" / "worktree_missing" surface as their own signals
+    // distinct from a clean pass.
+    phase?:
+      | "passed"
+      | "passed_typecheck_only"
+      | "typecheck_failed"
+      | "tests_failed"
+      | "skipped"
+      | "worktree_missing";
     typecheckExitCode?: number;
     testExitCode?: number;
     ranAt?: string;
@@ -621,6 +634,10 @@ async function runOneBuilder(
         : {}),
     });
     builderVerification = {
+      // Patch X: include the verifier's phase verdict so the reviewer
+      // sees "passed_typecheck_only" vs "passed" vs concrete failures
+      // rather than having to infer from exit codes alone.
+      ...(result.phase !== undefined ? { phase: result.phase } : {}),
       ...(result.typecheckExitCode !== undefined
         ? { typecheckExitCode: result.typecheckExitCode }
         : {}),
