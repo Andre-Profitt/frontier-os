@@ -655,22 +655,35 @@ function readPacketIndex(
     // status="in_progress" mean a crash happened mid-ingest; the
     // packet is RETRYABLE so we deliberately do NOT add it to the
     // set.
+    //
+    // Patch S non-blocker: malformed lines used to be silently
+    // skipped, which hid duplicate-ingest protection failures (e.g.
+    // an operator hand-edit truncating a row). Now the reader throws
+    // with file/line context so the operator notices and can fix the
+    // manifest before any new ingest. Strictly stricter than Patch R.
     const set = new Set<string>();
     const text = readFileSync(indexFile, "utf8");
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i]!.trim();
       if (trimmed.length === 0) continue;
+      let row: PacketIndexRow;
       try {
-        const row = JSON.parse(trimmed) as PacketIndexRow;
-        if (typeof row.packetId !== "string") continue;
-        const status = row.status ?? "complete";
-        if (status === "complete") set.add(row.packetId);
-      } catch {
-        // Malformed manifest line — skip (writer never produces these,
-        // but operator hand-edits could corrupt). The ingest path
-        // appends new rows regardless; we don't refuse to dedup just
-        // because someone cat'd garbage into the manifest.
+        row = JSON.parse(trimmed) as PacketIndexRow;
+      } catch (e) {
+        throw new QualityLedgerError(
+          `packets-index.jsonl line ${i + 1} is not valid JSON: ${e instanceof Error ? e.message : String(e)} (raw: ${trimmed.slice(0, 200)})`,
+          { ledgerDir, line: i + 1 },
+        );
       }
+      if (typeof row.packetId !== "string") {
+        throw new QualityLedgerError(
+          `packets-index.jsonl line ${i + 1} missing packetId field (raw: ${trimmed.slice(0, 200)})`,
+          { ledgerDir, line: i + 1 },
+        );
+      }
+      const status = row.status ?? "complete";
+      if (status === "complete") set.add(row.packetId);
     }
     return set;
   }

@@ -165,6 +165,13 @@ export class InferenceBroker {
         this.limiter.configure({
           modelId: key,
           rpm: provider.defaultRpm,
+          // Patch S non-blocker: pin burst capacity below RPM when the
+          // policy explicitly sets defaultMaxBurst (e.g. NIM strict
+          // per-window providers). When unset, capacity falls back to
+          // defaultRpm — prior behavior preserved for non-NIM models.
+          ...(provider.defaultMaxBurst !== undefined
+            ? { capacity: provider.defaultMaxBurst }
+            : {}),
           now: this.now,
         });
       }

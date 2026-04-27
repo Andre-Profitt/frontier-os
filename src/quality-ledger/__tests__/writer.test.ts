@@ -938,6 +938,58 @@ test("ingestOrchestration: legacy manifest row without `status` field counts as 
   });
 });
 
+// --- Patch S non-blocker: malformed manifest fail-loud (writer.ts) -------
+
+test("ingestOrchestration: malformed packets-index.jsonl line throws QualityLedgerError (Patch S)", () => {
+  // GPT Pro non-blocker: pre-Patch-S, the manifest reader silently
+  // skipped malformed JSON lines. That hid duplicate-ingest protection
+  // failures (an operator hand-edit could brick dedup without warning).
+  // Now: explicit throw with file/line context.
+  withTempLedger((ledgerDir) => {
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(
+      resolve(ledgerDir, "packets-index.jsonl"),
+      // Valid first line, invalid JSON second line.
+      JSON.stringify({
+        packetId: "p1",
+        taskId: "t1",
+        ts: "2026-04-01T00:00:00.000Z",
+        ingestedAt: "2026-04-01T00:00:01.000Z",
+        status: "complete",
+      }) + "\n{this is not json}\n",
+    );
+    assert.throws(
+      () => ingestOrchestration(buildSampleInput(), { ledgerDir }),
+      (err: Error) =>
+        err instanceof QualityLedgerError &&
+        /packets-index\.jsonl/.test(err.message) &&
+        /line 2/.test(err.message),
+    );
+  });
+});
+
+test("ingestOrchestration: manifest row missing packetId throws QualityLedgerError (Patch S)", () => {
+  withTempLedger((ledgerDir) => {
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(
+      resolve(ledgerDir, "packets-index.jsonl"),
+      // Valid JSON but missing required packetId.
+      JSON.stringify({
+        taskId: "t1",
+        ts: "2026-04-01T00:00:00.000Z",
+        ingestedAt: "2026-04-01T00:00:01.000Z",
+        status: "complete",
+      }) + "\n",
+    );
+    assert.throws(
+      () => ingestOrchestration(buildSampleInput(), { ledgerDir }),
+      (err: Error) =>
+        err instanceof QualityLedgerError &&
+        /missing packetId/.test(err.message),
+    );
+  });
+});
+
 test("readLedger: dedupes event rows by eventId across crash-replay duplicates (Patch R)", async () => {
   // After a crash + retry, the same eventId may appear twice in the
   // worker-runs.jsonl (once from the crashed attempt, once from the

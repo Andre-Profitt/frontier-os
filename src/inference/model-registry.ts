@@ -24,6 +24,14 @@ export interface ProviderEntry {
   baseUrlOverrideEnvVar?: string;
   defaultRpm: number;
   defaultMaxParallel: number;
+  // Patch S non-blocker: cap on the token bucket's initial size,
+  // independent of `defaultRpm` (the steady-state refill rate). When
+  // unset, capacity defaults to defaultRpm (the prior behavior — a
+  // 24-RPM bucket could fire all 24 tokens in the first second before
+  // refill rate-limiting kicked in, exactly the cold-start cliff that
+  // produces 429s on NIM batches). Set to a smaller value (e.g. 3)
+  // for providers with strict per-window enforcement.
+  defaultMaxBurst?: number;
 }
 
 export interface ClassModel {

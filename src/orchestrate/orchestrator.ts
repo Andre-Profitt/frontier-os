@@ -142,13 +142,25 @@ export async function runOrchestration(
       writeFileSync(p, md);
       contextPackPath = p;
     } catch (e) {
-      // Context pack failure is not fatal — log and continue. The
-      // operator can re-run with a fixed lane.
+      // Context pack failure: log to context-pack-error.txt for
+      // forensics either way. Behavior diverges on requireContextPack:
+      //   - default (false): non-fatal — orchestration continues. The
+      //     operator can re-run with a fixed lane.
+      //   - true: fatal — throw OrchestrationError so repo/factory
+      //     tasks don't run without context. (Patch S non-blocker:
+      //     prevents wrong-repo hallucinations on the exact workflow
+      //     that surfaced one earlier.)
       const msg = e instanceof Error ? e.message : String(e);
       writeFileSync(
         resolve(artifactsDir, "context-pack-error.txt"),
         `context pack lane=${input.contextPackLane} failed:\n${msg}\n`,
       );
+      if (input.requireContextPack) {
+        throw new OrchestrationError(
+          `context pack lane="${input.contextPackLane}" failed and requireContextPack=true: ${msg}`,
+          { lane: input.contextPackLane, taskId: input.taskId },
+        );
+      }
     }
   }
 

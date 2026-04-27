@@ -54,11 +54,19 @@ export interface PolicyRecommendation {
   //   demote_primary    — primary's rate is below the set's median; no
   //                       better alternate currently listed
   //   no_evidence       — class has < minSamples for any listed model
+  //   warn_thin_primary — primary leads on Wilson lower bound but its
+  //                       sample count is materially smaller than at
+  //                       least one alternate's. Patch S non-blocker:
+  //                       observational only — recommendedPrimary
+  //                       equals currentPrimary so the operator can
+  //                       decide whether to gather more evidence
+  //                       before trusting the lead.
   action:
     | "add_candidate"
     | "promote_alternate"
     | "demote_primary"
-    | "no_evidence";
+    | "no_evidence"
+    | "warn_thin_primary";
   // Rationale text for the operator (one sentence).
   rationale: string;
   // The current primary entry (provider:model) for this class.
@@ -204,6 +212,39 @@ export function recommendPolicy(
         evidence,
       });
       continue;
+    }
+
+    // Patch S non-blocker: observational warning. Even when the
+    // primary leads on Wilson lower bound (so promote/demote both
+    // skip), the operator may want to know that the lead rests on
+    // thin evidence. If at least one alternate has ≥5× the primary's
+    // sample count, surface a warn_thin_primary row. The 5× factor
+    // is calibrated to fire on n=3 vs n=15 but stay silent on
+    // comparable n's (n=10 vs n=12). Pure observation —
+    // recommendedPrimary equals currentPrimary, no swap proposed.
+    if (
+      primaryEvidence !== undefined &&
+      evidence[0]!.modelKey === currentPrimary
+    ) {
+      const otherSamples = evidence
+        .filter((e) => e.modelKey !== currentPrimary)
+        .map((e) => e.samples);
+      const maxAlternateSamples =
+        otherSamples.length > 0 ? Math.max(...otherSamples) : 0;
+      if (
+        maxAlternateSamples > 0 &&
+        maxAlternateSamples >= primaryEvidence.samples * 5
+      ) {
+        out.push({
+          taskClass,
+          action: "warn_thin_primary",
+          rationale: `Primary ${currentPrimary} leads on Wilson lower bound (rate=${fmt(primaryEvidence.rate)}, lower=${fmt(primaryEvidence.lowerBound)}, n=${primaryEvidence.samples}) but an alternate has ${maxAlternateSamples} samples — the lead rests on asymmetrically thin evidence relative to the field. Observational only; no swap proposed. Consider running more orchestrations before trusting the lead.`,
+          currentPrimary,
+          recommendedPrimary: currentPrimary,
+          evidence,
+        });
+        continue;
+      }
     }
 
     // Otherwise: no recommendation (primary is good or evidence is

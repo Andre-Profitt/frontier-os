@@ -826,6 +826,115 @@ test("runOrchestration: context pack failure is non-fatal — error file written
   }
 });
 
+// --- Patch S non-blocker: requireContextPack=true makes failure fatal --
+
+test("runOrchestration (Patch S): requireContextPack=true → context-pack failure throws OrchestrationError", async () => {
+  // GPT Pro non-blocker: for repo/factory tasks, a context-pack
+  // failure used to be silently logged and the orchestration ran
+  // anyway — but that's exactly the workflow that surfaced a wrong-
+  // repo hallucination earlier. Operators on those task classes need
+  // a hard stop when the context pack can't be assembled. Default
+  // remains non-fatal (regression test below pins this).
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    await assert.rejects(
+      () =>
+        runOrchestration(
+          {
+            broker: broker as unknown as InferenceBroker,
+            worktreeManager: buildManager(repoRoot),
+            artifactsRoot: resolve(repoRoot, "artifacts"),
+            contextPackImpl: () => {
+              throw new Error("lane probe failed");
+            },
+            ...COMMON_DEPS_OVERRIDES,
+          },
+          {
+            taskId: "ctx-fail-strict",
+            taskDescription: "x",
+            builderCount: 1,
+            reviewerCount: 1,
+            baseBranch: "main",
+            touchList: ["added.ts"],
+            rubricPath: "/x.json",
+            contextPackLane: "broken-lane",
+            requireContextPack: true,
+            qualityFloor: 0.5,
+          },
+        ),
+      /context pack/i,
+    );
+    // Error file should still be written for forensics, even though
+    // the orchestrator aborted.
+    assert.ok(
+      existsSync(
+        resolve(
+          repoRoot,
+          "artifacts",
+          "ctx-fail-strict",
+          "context-pack-error.txt",
+        ),
+      ),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runOrchestration (Patch S): requireContextPack default false → failure remains non-fatal (regression)", async () => {
+  // Default behavior preserved: context-pack failure is logged and
+  // the run continues. Existing test ("context pack failure is non-
+  // fatal") covers this, but pinning it here under the Patch S
+  // umbrella so future changes to the strict path don't accidentally
+  // flip the default.
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        contextPackImpl: () => {
+          throw new Error("lane probe failed");
+        },
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "ctx-fail-default",
+        taskDescription: "x",
+        builderCount: 1,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        contextPackLane: "broken-lane",
+        // requireContextPack omitted → default false
+        qualityFloor: 0.5,
+      },
+    );
+    assert.equal(packet.summary?.arbiterDecision, "accept");
+    assert.equal(packet.contextPackPath, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
 // --- model pinning flows through orchestrator → builder swarm → broker --
 
 test("runOrchestration: builderModelKeys forwarded as broker.callClass({modelOverride}) per builder", async () => {

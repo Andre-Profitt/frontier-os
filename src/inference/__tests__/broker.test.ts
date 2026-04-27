@@ -298,6 +298,46 @@ test("inspectBucket: configured for every (provider, model) pair in classes", as
   });
 });
 
+// --- Patch S non-blocker: NIM burst capacity vs RPM separation ----------
+
+test("inspectBucket (Patch S): defaultMaxBurst caps initial bucket size below defaultRpm", async () => {
+  // GPT Pro non-blocker: pre-Patch-S, bucket capacity equaled RPM, so
+  // a 24-RPM NIM model could fire 24 calls in the first second before
+  // refill rate-limiting kicked in — exactly how cold-start hits 429
+  // cliffs under orchestration batches. defaultMaxBurst lets the
+  // policy pin a smaller burst (e.g. 3) while keeping the steady-state
+  // refill at the full RPM.
+  const policy = basicPolicy();
+  // Mutate stub to be a "NIM-like" provider: low RPM, smaller burst.
+  (
+    policy.providers as {
+      stub: { defaultRpm: number; defaultMaxBurst?: number };
+    }
+  ).stub.defaultRpm = 24;
+  (
+    policy.providers as {
+      stub: { defaultRpm: number; defaultMaxBurst?: number };
+    }
+  ).stub.defaultMaxBurst = 3;
+  await withTempPolicy(policy, async (registry) => {
+    const broker = new InferenceBroker({
+      registry,
+      providerFactory: (name) => new StubProvider(name),
+    });
+    const inspected = broker.inspectBucket("stub", "m1");
+    assert.ok(inspected);
+    assert.equal(
+      inspected!.capacity,
+      3,
+      "burst capacity must equal defaultMaxBurst",
+    );
+    // The other provider in the policy left defaultMaxBurst unset →
+    // capacity defaults to defaultRpm (60) — no regression.
+    const other = broker.inspectBucket("stub2", "m2");
+    assert.equal(other!.capacity, 60);
+  });
+});
+
 // --- modelOverride (PR-A patch) ------------------------------------------
 
 test("callClass: modelOverride pins to that exact (provider, model) — fallback skipped", async () => {

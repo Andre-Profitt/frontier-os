@@ -45,6 +45,14 @@ export interface OrchestrationInput {
   // context pack first and writes the markdown to artifacts. When
   // unset, no context pack is generated.
   contextPackLane?: string;
+  // Patch S non-blocker: when true, a context-pack failure aborts
+  // the orchestration with OrchestrationError instead of writing a
+  // context-pack-error.txt and continuing. Default false (legacy
+  // behavior preserved). Set to true for repo/factory tasks where
+  // running without context risks wrong-repo hallucinations on the
+  // exact workflow that surfaced one earlier (CRM Analytics dashboard
+  // edits hitting frontier-os state, etc.).
+  requireContextPack?: boolean;
   // Per-arbiter-rerun verification commands. Same defaults as
   // ArbiterInput.
   typecheckCommand?: string[] | null;

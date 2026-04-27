@@ -216,6 +216,75 @@ test("recommendPolicy: silent (no row) when primary leads or ties within margin"
   assert.equal(recs.length, 0);
 });
 
+// --- Patch S non-blocker: rookie-primary observability -----------------
+
+test("recommendPolicy (Patch S): warn_thin_primary when primary leads but evidence is asymmetric", () => {
+  // GPT Pro non-blocker: Wilson lower bound prevents *promotion* on
+  // thin evidence, but an operator looking at "no recommendation"
+  // gets no signal that their primary is sitting on n=3 while an
+  // alternate has n=38. Surface as an observational row (not a
+  // recommendation) so the operator notices the asymmetry.
+  const policy = policyWith({
+    patch_builder: {
+      models: [
+        { provider: "ollama-local", model: "primary:14b" }, // primary
+        { provider: "ollama-local", model: "alt:32b" },
+      ],
+    },
+  });
+  const scores: ModelScore[] = [
+    builderScore({
+      modelKey: "ollama-local:primary:14b",
+      orchestrationsParticipated: 3, // thin
+      selectionRate: 1.0,
+    }),
+    builderScore({
+      modelKey: "ollama-local:alt:32b",
+      orchestrationsParticipated: 30, // 10x more evidence
+      selectionRate: 0.5,
+    }),
+  ];
+  const recs = recommendPolicy(policy, scores, {
+    minSamples: 3,
+    improvementMargin: 0.1,
+  });
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0]!.action, "warn_thin_primary");
+  // Observational only: don't suggest a swap.
+  assert.equal(recs[0]!.currentPrimary, "ollama-local:primary:14b");
+  assert.equal(recs[0]!.recommendedPrimary, "ollama-local:primary:14b");
+  assert.match(recs[0]!.rationale, /thin|asymmetr|relative/i);
+});
+
+test("recommendPolicy (Patch S): no warn_thin_primary when sample counts are comparable", () => {
+  // Comparable n on primary + alternates → silent (no observation row).
+  const policy = policyWith({
+    patch_builder: {
+      models: [
+        { provider: "ollama-local", model: "primary:14b" },
+        { provider: "ollama-local", model: "alt:32b" },
+      ],
+    },
+  });
+  const scores: ModelScore[] = [
+    builderScore({
+      modelKey: "ollama-local:primary:14b",
+      orchestrationsParticipated: 10,
+      selectionRate: 0.7,
+    }),
+    builderScore({
+      modelKey: "ollama-local:alt:32b",
+      orchestrationsParticipated: 12,
+      selectionRate: 0.5,
+    }),
+  ];
+  const recs = recommendPolicy(policy, scores, {
+    minSamples: 3,
+    improvementMargin: 0.1,
+  });
+  assert.equal(recs.length, 0);
+});
+
 // --- reviewer scoring ----------------------------------------------------
 
 test("recommendPolicy: reviewers use validityRate as the rate signal", () => {
