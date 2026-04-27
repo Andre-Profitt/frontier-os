@@ -103,6 +103,12 @@ export interface ReviewSwarmInput {
   packetId?: string;
   // Optional patch ID — surfaced to reviewers for citation.
   patchId?: string;
+  // Optional task ID — passed to the reviewer prompt's {{taskId}} slot.
+  // The skill template uses it for context ("reviewer of patchX on
+  // taskY"). Defaults to "" if not provided; missing-variable
+  // substitution would otherwise leave the literal `{{taskId}}` in
+  // the prompt, which models treat as documentation noise.
+  taskId?: string;
   // Test seam: load a Skill instead of going to disk. Default: loadSkill(taskClass).
   loadSkillImpl?: (taskClass: string) => Skill | null;
   // Test seam: load the SKILL.md prose body. Default: loadPromptTemplate(skill).
@@ -166,6 +172,13 @@ export async function runReviewSwarm(
         reviewerId,
         reviewerCount: String(reviewerCount),
         patchId,
+        taskId: input.taskId ?? "",
+        // Patch L: orchestrator doesn't currently extract the builder's
+        // verification record out of their rawText (it's free-form).
+        // Pass empty string so the prompt slot doesn't render as a
+        // literal `{{builderVerificationRecord}}`. Wiring the real
+        // record through is a tracked follow-up.
+        builderVerificationRecord: "",
       });
       try {
         const callRes = await deps.broker.callClass({
