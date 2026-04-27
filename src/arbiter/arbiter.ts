@@ -211,10 +211,13 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
   //   - reviewCoverageOk: when reviewerFindings provided, reviewCoverage
   //     must be >= minReviewCoverage. Skipped when no findings provided
   //     (caller chose not to gate on reviews).
-  //   - noConfirmedHighSeverityIssue: zero high-severity bug or
-  //     contract_violation findings. ANY confirmed high finding flips
-  //     the candidate from accept-eligible to escalate-only (operator
-  //     decides whether the finding is a true positive).
+  //   - noBlockingReviewIssue: zero bug + zero contract_violation +
+  //     zero high-severity findings. ANY of these flips the candidate
+  //     from accept-eligible to escalate-only (operator decides whether
+  //     the finding is a true positive). Renamed from
+  //     noBlockingReviewIssue (Patch E4 / GPT third-pass note):
+  //     the field treats any bug or contract_violation as blocking
+  //     regardless of severity, so the old name lied.
   //   - antiExampleGateOk: no matched anti-example AND all configured
   //     anti-example paths loaded.
   //
@@ -261,7 +264,7 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
       reviewCoverageOk = cov >= minReviewCoverage;
     }
 
-    const noConfirmedHighSeverityIssue =
+    const noBlockingReviewIssue =
       findingsBugs === 0 &&
       findingsContract === 0 &&
       findingsSeverityHigh === 0;
@@ -274,7 +277,7 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
       rubricScoreOk &&
       rubricCoverageOk &&
       reviewCoverageOk &&
-      noConfirmedHighSeverityIssue &&
+      noBlockingReviewIssue &&
       antiExampleGateOk;
 
     const out: Eligibility = {
@@ -285,7 +288,7 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
       rubricScore,
       rubricCoverage,
       reviewCoverageOk,
-      noConfirmedHighSeverityIssue,
+      noBlockingReviewIssue,
       antiExampleGateOk,
       eligible,
       score: rubricScore,
@@ -331,7 +334,7 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
         e.antiExampleGateOk &&
         (!e.rubricCoverageOk ||
           !e.reviewCoverageOk ||
-          !e.noConfirmedHighSeverityIssue),
+          !e.noBlockingReviewIssue),
     );
     if (uncertaintyOnly.length > 0) {
       decision = "escalate_to_human";
@@ -463,7 +466,7 @@ interface Eligibility {
   rubricCoverage: number;
   reviewCoverageOk: boolean;
   reviewCoverage?: number;
-  noConfirmedHighSeverityIssue: boolean;
+  noBlockingReviewIssue: boolean;
   antiExampleGateOk: boolean;
   eligible: boolean;
   score: number;
@@ -497,7 +500,7 @@ function collectRejectionReasons(
       why.push(
         `review coverage ${e.reviewCoverage.toFixed(2)} < minReviewCoverage ${minReviewCoverage}`,
       );
-    if (!e.noConfirmedHighSeverityIssue)
+    if (!e.noBlockingReviewIssue)
       why.push("reviewer flagged high-severity bug or contract_violation");
     if (!e.antiExampleGateOk) why.push("matched a taste/anti_examples pattern");
     if (why.length > 0) reasons.push(`${e.builderId}: ${why.join("; ")}`);
@@ -525,7 +528,7 @@ function collectEscalationReasons(
       blockers.push(
         `review coverage ${e.reviewCoverage.toFixed(2)} < ${minReviewCoverage} (too many reviewers returned unparseable text)`,
       );
-    if (!e.noConfirmedHighSeverityIssue)
+    if (!e.noBlockingReviewIssue)
       blockers.push(
         "reviewer flagged a high-severity bug or contract_violation — operator confirms or rejects the finding",
       );
@@ -581,7 +584,7 @@ function renderEvidence(opts: {
         ? ` reviewCovOk=${e.reviewCoverageOk}(${e.reviewCoverage.toFixed(2)})`
         : ` reviewCovOk=skipped`;
     lines.push(
-      `  ${e.builderId}: eligible=${e.eligible} | verPassed=${e.verPassed} rubricScoreOk=${e.rubricScoreOk}(${e.rubricScore.toFixed(2)}) rubricCovOk=${e.rubricCoverageOk}(${e.rubricCoverage.toFixed(2)})${reviewPart} noHighSev=${e.noConfirmedHighSeverityIssue} antiOk=${e.antiExampleGateOk}`,
+      `  ${e.builderId}: eligible=${e.eligible} | verPassed=${e.verPassed} rubricScoreOk=${e.rubricScoreOk}(${e.rubricScore.toFixed(2)}) rubricCovOk=${e.rubricCoverageOk}(${e.rubricCoverage.toFixed(2)})${reviewPart} noBlockingReview=${e.noBlockingReviewIssue} antiOk=${e.antiExampleGateOk}`,
     );
   }
   const skipped = opts.candidates.filter(
