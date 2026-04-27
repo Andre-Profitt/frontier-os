@@ -104,11 +104,17 @@ export interface BrokerOptions {
   registry?: ModelRegistry;
   // Caller-supplied provider factory. Default constructs nim + ollama-local
   // + lmstudio-local from the registry.
+  // Patch U: factory now also receives the policy's
+  // defaults.requestTimeoutMs so providers can honor a single
+  // operator-tunable timeout instead of falling back to their
+  // hardcoded 300s default. Optional for backwards compat — existing
+  // test factories that ignore the trailing args keep working.
   providerFactory?: (
     name: string,
     entry: ProviderEntry,
     apiKey: string | null,
     baseUrl: string | null,
+    requestTimeoutMs?: number,
   ) => OpenAICompatibleProvider;
   // Test seam.
   now?: () => number;
@@ -144,11 +150,16 @@ export class InferenceBroker {
     // Initialize provider clients + buckets for each effectively-enabled
     // provider in the registry.
     const factory = opts.providerFactory ?? defaultProviderFactory;
+    // Patch U: thread policy.defaults.requestTimeoutMs through to the
+    // factory. Pre-Patch-U this field was dead config — the providers
+    // each used their hardcoded DEFAULT_TIMEOUT_MS (300s). Now the
+    // operator can tune timeouts in one place.
+    const requestTimeoutMs = this.registry.defaults().requestTimeoutMs;
     for (const name of this.registry.listEnabledProviders()) {
       const entry = this.registry.providerEntry(name)!;
       const apiKey = this.registry.resolveApiKey(name);
       const baseUrl = this.registry.resolveBaseUrl(name);
-      const provider = factory(name, entry, apiKey, baseUrl);
+      const provider = factory(name, entry, apiKey, baseUrl, requestTimeoutMs);
       this.providers.set(name, provider);
     }
 
@@ -420,17 +431,25 @@ function defaultProviderFactory(
   entry: ProviderEntry,
   apiKey: string | null,
   baseUrl: string | null,
+  requestTimeoutMs?: number,
 ): OpenAICompatibleProvider {
   if (name === "nvidia-nim") {
     // NIM provider knows its own defaults; re-resolve auth via env unless
-    // baseUrl is overridden.
-    return new NvidiaNIMProvider();
+    // baseUrl is overridden. Patch U: pass requestTimeoutMs so the
+    // policy's defaults.requestTimeoutMs reaches the NIM client.
+    return new NvidiaNIMProvider(
+      requestTimeoutMs !== undefined ? { requestTimeoutMs } : {},
+    );
   }
   if (!baseUrl) {
     throw new Error(`provider ${name} has no baseUrl; cannot construct client`);
   }
   const config: ProviderConfig = { baseUrl };
   if (apiKey) config.apiKey = apiKey;
+  // Patch U: honor the policy's per-call timeout. Provider falls back
+  // to its hardcoded 300s default only when undefined.
+  if (requestTimeoutMs !== undefined)
+    config.requestTimeoutMs = requestTimeoutMs;
   return new OpenAICompatibleProvider(name, config);
 }
 

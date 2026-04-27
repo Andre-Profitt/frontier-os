@@ -34,6 +34,11 @@ export interface NIMConfigSource {
   // Test seam — inject the credential resolver. Defaults to the real
   // one (process.env first, then dotenv search path).
   resolveCredentialImpl?: (key: string) => string | undefined;
+  // Patch U: per-call timeout passed through from the broker, which
+  // sources it from policy.defaults.requestTimeoutMs. When undefined,
+  // the underlying OpenAICompatibleProvider falls back to its
+  // hardcoded 300s default.
+  requestTimeoutMs?: number;
 }
 
 export function resolveNIMConfig(source: NIMConfigSource = {}): ProviderConfig {
@@ -51,6 +56,8 @@ export function resolveNIMConfig(source: NIMConfigSource = {}): ProviderConfig {
   const config: ProviderConfig = { baseUrl };
   if (apiKey) config.apiKey = apiKey;
   if (source.fetchImpl) config.fetchImpl = source.fetchImpl;
+  if (source.requestTimeoutMs !== undefined)
+    config.requestTimeoutMs = source.requestTimeoutMs;
   return config;
 }
 

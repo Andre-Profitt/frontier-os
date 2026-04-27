@@ -298,6 +298,65 @@ test("inspectBucket: configured for every (provider, model) pair in classes", as
   });
 });
 
+// --- Patch U: policy.defaults.requestTimeoutMs threaded to providers ----
+
+test("InferenceBroker (Patch U): policy.defaults.requestTimeoutMs passed to providerFactory", async () => {
+  // GPT Pro non-blocker / handoff item #2: pre-Patch-U, the policy
+  // field `defaults.requestTimeoutMs` was dead config — providers
+  // fell back to their hardcoded 300s default. The broker now
+  // threads the policy value through to the factory so operators
+  // can tune per-deployment timeouts in one place.
+  const policy = basicPolicy();
+  // Tighter than the default 30_000 used in basicPolicy; the test
+  // captures whatever the policy specifies and asserts it round-trips.
+  (
+    policy as { defaults: { requestTimeoutMs: number } }
+  ).defaults.requestTimeoutMs = 60_000;
+  await withTempPolicy(policy, async (registry) => {
+    const seenTimeouts: Array<number | undefined> = [];
+    new InferenceBroker({
+      registry,
+      providerFactory: (name, _entry, _apiKey, _baseUrl, requestTimeoutMs) => {
+        seenTimeouts.push(requestTimeoutMs);
+        return new StubProvider(name);
+      },
+    });
+    // Two providers in basicPolicy; both factory calls see the policy's
+    // requestTimeoutMs.
+    assert.equal(seenTimeouts.length, 2);
+    for (const t of seenTimeouts) {
+      assert.equal(
+        t,
+        60_000,
+        "factory must receive policy.defaults.requestTimeoutMs",
+      );
+    }
+  });
+});
+
+test("InferenceBroker (Patch U): default factory passes requestTimeoutMs through to OpenAICompatibleProvider", async () => {
+  // End-to-end: policy.defaults.requestTimeoutMs → defaultProviderFactory
+  // → ProviderConfig.requestTimeoutMs → OpenAICompatibleProvider's
+  // protected requestTimeoutMs. Assert via the provider's internal
+  // field (cast, since it's protected — fine for this contract test).
+  const policy = basicPolicy();
+  (
+    policy as { defaults: { requestTimeoutMs: number } }
+  ).defaults.requestTimeoutMs = 90_000;
+  await withTempPolicy(policy, async (registry) => {
+    const broker = new InferenceBroker({ registry });
+    // Both providers in basicPolicy use OpenAICompatibleProvider via
+    // defaultProviderFactory. Inspect via a controlled cast.
+    const stubProvider = (
+      broker as unknown as {
+        providers: Map<string, { requestTimeoutMs: number }>;
+      }
+    ).providers.get("stub");
+    assert.ok(stubProvider, "stub provider must exist");
+    assert.equal(stubProvider!.requestTimeoutMs, 90_000);
+  });
+});
+
 // --- Patch S non-blocker: NIM burst capacity vs RPM separation ----------
 
 test("inspectBucket (Patch S): defaultMaxBurst caps initial bucket size below defaultRpm", async () => {
