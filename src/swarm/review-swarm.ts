@@ -294,6 +294,45 @@ export function renderPrompt(
 // markdown fences sometimes. Extract the first balanced `{...}` block.
 // Returns null if no candidate parses or the parsed object isn't shaped
 // like a ReviewerOutput.
+// Allowed enum values, kept here so the validator stays a single source
+// of truth. Mirrors review-packet.schema.json $defs.finding.
+const FINDING_CATEGORIES: ReadonlySet<string> = new Set<FindingCategory>([
+  "bug",
+  "contract_violation",
+  "false_green",
+  "risk",
+  "style",
+]);
+const FINDING_SEVERITIES: ReadonlySet<string> = new Set<FindingSeverity>([
+  "high",
+  "medium",
+  "low",
+]);
+
+// Validate a single finding against the schema enums + required-claim
+// rule. v1: any malformed finding poisons the WHOLE reviewer output —
+// "valid reviewer" must mean every finding is valid. (GPT Pro Patch-E
+// review item E3.) Without this, `category: "contract violation"` (with
+// space) parses as a generic string and counts as valid coverage, but
+// the arbiter never sees a contract_violation finding → false-clean
+// recreated.
+function isValidFinding(raw: unknown): raw is Finding {
+  if (typeof raw !== "object" || raw === null) return false;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.category !== "string" || !FINDING_CATEGORIES.has(r.category))
+    return false;
+  if (typeof r.severity !== "string" || !FINDING_SEVERITIES.has(r.severity))
+    return false;
+  if (typeof r.claim !== "string" || r.claim.trim().length === 0) return false;
+  // Optional fields: type-check only if present.
+  if (r.file !== undefined && typeof r.file !== "string") return false;
+  if (r.line !== undefined && typeof r.line !== "number") return false;
+  if (r.evidence !== undefined && typeof r.evidence !== "string") return false;
+  if (r.antiExample !== undefined && typeof r.antiExample !== "string")
+    return false;
+  return true;
+}
+
 export function tryParseReviewerOutput(
   text: string,
   reviewerIdFallback: string,
@@ -302,12 +341,26 @@ export function tryParseReviewerOutput(
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate) as Record<string, unknown>;
-      const findings = Array.isArray(parsed.findings)
-        ? (parsed.findings as Finding[])
+      const findingsRaw = Array.isArray(parsed.findings)
+        ? parsed.findings
         : null;
       const summary =
         typeof parsed.summary === "string" ? parsed.summary : null;
-      if (findings === null || summary === null) continue;
+      if (findingsRaw === null || summary === null) continue;
+
+      // Validate every finding. Any bad finding fails the whole output —
+      // we don't half-accept reviewers. (Reviewer either followed the
+      // contract or didn't.) See E3 rationale above.
+      let allValid = true;
+      for (const f of findingsRaw) {
+        if (!isValidFinding(f)) {
+          allValid = false;
+          break;
+        }
+      }
+      if (!allValid) continue;
+      const findings = findingsRaw as Finding[];
+
       return {
         ...(typeof parsed.patchId === "string"
           ? { patchId: parsed.patchId }

@@ -319,6 +319,159 @@ test("runReviewSwarm: missing skill for taskClass throws ReviewSwarmError", asyn
   );
 });
 
+// --- finding schema validation (Patch E1 / GPT Pro Blocker #3) ----------
+//
+// Pre-Patch-E1, tryParseReviewerOutput accepted any object with a
+// findings[] array and a summary string — without checking that each
+// finding's category/severity matched the schema enums. A reviewer
+// returning `category: "contract violation"` (with space) parsed as
+// "valid coverage" but its finding never reached the arbiter properly,
+// recreating the false-clean trap that Patch B was supposed to close.
+
+test("tryParseReviewerOutput: invalid severity → null (whole reviewer poisoned)", () => {
+  const bad = JSON.stringify({
+    findings: [{ category: "bug", severity: "HIGH", claim: "case wrong" }],
+    summary: "x",
+  });
+  assert.equal(tryParseReviewerOutput(bad, "r1"), null);
+});
+
+test("tryParseReviewerOutput: invalid category → null", () => {
+  const bad = JSON.stringify({
+    findings: [
+      { category: "contract violation", severity: "high", claim: "space" },
+    ],
+    summary: "x",
+  });
+  assert.equal(tryParseReviewerOutput(bad, "r1"), null);
+});
+
+test("tryParseReviewerOutput: empty claim → null", () => {
+  const bad = JSON.stringify({
+    findings: [{ category: "bug", severity: "high", claim: "" }],
+    summary: "x",
+  });
+  assert.equal(tryParseReviewerOutput(bad, "r1"), null);
+});
+
+test("tryParseReviewerOutput: missing claim → null", () => {
+  const bad = JSON.stringify({
+    findings: [{ category: "bug", severity: "high" }],
+    summary: "x",
+  });
+  assert.equal(tryParseReviewerOutput(bad, "r1"), null);
+});
+
+test("tryParseReviewerOutput: wrong type for line → null", () => {
+  const bad = JSON.stringify({
+    findings: [{ category: "bug", severity: "high", claim: "x", line: "12" }],
+    summary: "x",
+  });
+  assert.equal(tryParseReviewerOutput(bad, "r1"), null);
+});
+
+test("tryParseReviewerOutput: one bad + one good finding → null (any-bad poisons all)", () => {
+  // The whole reviewer either followed the contract or didn't — no
+  // partial credit. v1 design: half-accepting a reviewer makes the
+  // arbiter's reviewClean signal much harder to reason about.
+  const mixed = JSON.stringify({
+    findings: [
+      { category: "bug", severity: "high", claim: "good one" },
+      { category: "BAD_CATEGORY", severity: "high", claim: "bad one" },
+    ],
+    summary: "x",
+  });
+  assert.equal(tryParseReviewerOutput(mixed, "r1"), null);
+});
+
+test("tryParseReviewerOutput: all valid findings → still accepted", () => {
+  const ok = JSON.stringify({
+    findings: [
+      {
+        category: "bug",
+        severity: "high",
+        claim: "real finding",
+        file: "x.ts",
+        line: 5,
+      },
+      { category: "contract_violation", severity: "medium", claim: "another" },
+    ],
+    summary: "x",
+  });
+  const parsed = tryParseReviewerOutput(ok, "r1");
+  assert.ok(parsed);
+  assert.equal(parsed?.findings.length, 2);
+});
+
+test("runReviewSwarm: reviewer returning malformed severity → invalidReviewerCount, coverage drops", async () => {
+  // End-to-end: the swarm sees the malformed output as invalid
+  // (output=null, rawText preserved). Coverage drops below 1.0. Arbiter
+  // would catch this via the reviewCoverage gate (Patch B+D).
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: deliverable(1), // valid
+  });
+  broker.enqueue({
+    ok: true,
+    assistantText: JSON.stringify({
+      findings: [{ category: "bug", severity: "HIGH", claim: "case wrong" }],
+      summary: "x",
+    }),
+  });
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 2,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  assert.equal(packet.validReviewerCount, 1);
+  assert.equal(packet.invalidReviewerCount, 1);
+  assert.equal(packet.reviewCoverage, 0.5);
+  // The valid reviewer's finding still reached the aggregate.
+  assert.equal(packet.findingsByCategory["bug"], 1);
+  assert.equal(packet.findingsBySeverity.high, 1);
+});
+
+test("runReviewSwarm: valid high-severity bug reaches the aggregate (regression check)", async () => {
+  // Make sure the stricter validator doesn't accidentally drop legitimate
+  // findings.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: JSON.stringify({
+      findings: [
+        {
+          category: "contract_violation",
+          severity: "high",
+          claim: "real defect",
+          file: "src/foo.ts",
+          line: 42,
+        },
+      ],
+      summary: "found one",
+    }),
+  });
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  assert.equal(packet.validReviewerCount, 1);
+  assert.equal(packet.totalFindings, 1);
+  assert.equal(packet.findingsByCategory["contract_violation"], 1);
+  assert.equal(packet.findingsBySeverity.high, 1);
+});
+
 // --- coverage fields (Patch B / GPT Pro Issue #2) ------------------------
 
 test("runReviewSwarm: all reviewers return parseable JSON → reviewCoverage=1.0, validReviewerCount=N", async () => {
