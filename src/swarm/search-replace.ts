@@ -55,12 +55,42 @@ export interface ParseResult {
   warnings: string[];
 }
 
-// Markers — case-sensitive, exactly as written. Embedding them here
-// instead of regexes so a model that accidentally generates the
-// markers in narrative prose won't false-positive on partial matches.
-const SEARCH_MARKER = "<<<<<<< SEARCH";
-const SEPARATOR = "=======";
-const REPLACE_MARKER = ">>>>>>> REPLACE";
+// Markers — accept 5–15 angle brackets / equals signs around the
+// SEARCH/SEPARATOR/REPLACE keywords. The Aider canonical form is
+// exactly 7 (matches a git conflict marker), but real-orchestration
+// data on 2026-04-27 showed qwen2.5:72b emitting 9 brackets and 10
+// equals roughly half the time. The parser used to be strict on the
+// canonical 7-character forms, which silently treated the extra
+// brackets as filename stragglers ("block for <<: SEARCH not found")
+// — a confusing failure mode for an output that was otherwise fine.
+//
+// Permissive on count (5–15), strict on the keyword + leading-line
+// requirement so a model emitting `<<<<<<` in narrative prose without
+// the SEARCH keyword still doesn't false-positive.
+const SEARCH_RE = /^<{5,15}\s+SEARCH\s*$/m;
+const SEPARATOR_RE = /^={5,15}\s*$/m;
+const REPLACE_RE = /^>{5,15}\s+REPLACE\s*$/m;
+
+interface MarkerMatch {
+  start: number;
+  end: number;
+}
+
+function findMarker(
+  text: string,
+  re: RegExp,
+  from: number,
+): MarkerMatch | null {
+  // RegExp lastIndex semantics differ for /m vs /g — use slice + new
+  // RegExp per call so we don't have to clone state. Cost is fine for
+  // realistic prompt sizes.
+  const slice = text.slice(from);
+  const localRe = new RegExp(re.source, "m");
+  const m = localRe.exec(slice);
+  if (!m) return null;
+  const start = from + m.index;
+  return { start, end: start + m[0].length };
+}
 
 export function parseSearchReplaceBlocks(text: string): ParseResult {
   const blocks: SearchReplaceBlock[] = [];
@@ -69,32 +99,32 @@ export function parseSearchReplaceBlocks(text: string): ParseResult {
 
   let cursor = 0;
   while (cursor < text.length) {
-    const searchIdx = text.indexOf(SEARCH_MARKER, cursor);
-    if (searchIdx < 0) break;
+    const searchM = findMarker(text, SEARCH_RE, cursor);
+    if (!searchM) break;
     hadAnyMarkers = true;
     // Filename is the LAST non-empty line before the SEARCH marker.
     // The model often emits a blank line, then the path, then
     // SEARCH — accept any whitespace.
-    const beforeSearch = text.slice(cursor, searchIdx);
+    const beforeSearch = text.slice(cursor, searchM.start);
     const filePath = extractTrailingPath(beforeSearch);
     if (!filePath) {
       warnings.push(
-        `block at offset ${searchIdx}: no filename line above SEARCH marker`,
+        `block at offset ${searchM.start}: no filename line above SEARCH marker`,
       );
-      cursor = searchIdx + SEARCH_MARKER.length;
+      cursor = searchM.end;
       continue;
     }
-    const sepIdx = text.indexOf(SEPARATOR, searchIdx + SEARCH_MARKER.length);
-    if (sepIdx < 0) {
+    const sepM = findMarker(text, SEPARATOR_RE, searchM.end);
+    if (!sepM) {
       warnings.push(
-        `block at offset ${searchIdx} (${filePath}): no '${SEPARATOR}' separator`,
+        `block at offset ${searchM.start} (${filePath}): no '=======' separator`,
       );
       break;
     }
-    const replaceIdx = text.indexOf(REPLACE_MARKER, sepIdx + SEPARATOR.length);
-    if (replaceIdx < 0) {
+    const replaceM = findMarker(text, REPLACE_RE, sepM.end);
+    if (!replaceM) {
       warnings.push(
-        `block at offset ${searchIdx} (${filePath}): no '${REPLACE_MARKER}' close`,
+        `block at offset ${searchM.start} (${filePath}): no '>>>>>>> REPLACE' close`,
       );
       break;
     }
@@ -102,13 +132,13 @@ export function parseSearchReplaceBlocks(text: string): ParseResult {
     // are emitted on their own line; the newline belongs to the
     // marker, not the content).
     const search = stripOneLeadingNewline(
-      text.slice(searchIdx + SEARCH_MARKER.length, sepIdx),
+      text.slice(searchM.end, sepM.start),
     ).replace(/\n$/, "");
     const replace = stripOneLeadingNewline(
-      text.slice(sepIdx + SEPARATOR.length, replaceIdx),
+      text.slice(sepM.end, replaceM.start),
     ).replace(/\n$/, "");
     blocks.push({ filePath, search, replace });
-    cursor = replaceIdx + REPLACE_MARKER.length;
+    cursor = replaceM.end;
   }
 
   return { blocks, hadAnyMarkers, warnings };

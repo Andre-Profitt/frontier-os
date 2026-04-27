@@ -133,6 +133,80 @@ new
   assert.match(r.warnings.join(" "), /no filename/);
 });
 
+// Patch M1: real-orchestration finding (2026-04-27) — qwen2.5:72b
+// emitted 9-angle-bracket markers half the time. Parser must tolerate
+// 5-15 angle brackets + equals signs around the SEARCH/SEPARATOR/REPLACE
+// keywords. Strict 7-char form was rejecting otherwise-correct output.
+test("parse: 9-angle-bracket markers (real qwen2.5:72b output) parse correctly", () => {
+  const text = `src/foo.ts
+<<<<<<<<< SEARCH
+old
+=========
+new
+>>>>>>>>> REPLACE
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(r.warnings.length, 0);
+  assert.equal(r.blocks.length, 1);
+  assert.equal(r.blocks[0]?.filePath, "src/foo.ts");
+  assert.equal(r.blocks[0]?.search, "old");
+  assert.equal(r.blocks[0]?.replace, "new");
+});
+
+test("parse: 10-equals separator + mixed bracket counts (qwen2.5:72b variance) parse correctly", () => {
+  const text = `src/foo.ts
+<<<<<<<<< SEARCH
+old
+==========
+new
+>>>>>>>>>>> REPLACE
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(r.warnings.length, 0);
+  assert.equal(r.blocks.length, 1);
+});
+
+test("parse: 5-angle-bracket markers (lower bound) still parse", () => {
+  const text = `src/foo.ts
+<<<<< SEARCH
+old
+=====
+new
+>>>>> REPLACE
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(r.blocks.length, 1);
+});
+
+test("parse: 4-angle-bracket markers (below lower bound) do NOT parse — false-positive guard", () => {
+  // Code legitimately containing 4 angle brackets (e.g. TS generics
+  // chains) shouldn't be misread as a marker.
+  const text = `src/foo.ts
+<<<< SEARCH
+old
+====
+new
+>>>> REPLACE
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(r.hadAnyMarkers, false);
+  assert.equal(r.blocks.length, 0);
+});
+
+test("parse: bracket count without SEARCH keyword is NOT treated as marker", () => {
+  // Pin: marker is bracket-count + KEYWORD. Naked brackets don't trip.
+  const text = `src/foo.ts
+<<<<<<<<<
+old
+=========
+new
+>>>>>>>>>
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(r.hadAnyMarkers, false);
+  assert.equal(r.blocks.length, 0);
+});
+
 test("parse: multi-line SEARCH and REPLACE preserve internal newlines", () => {
   const text = `src/foo.ts
 <<<<<<< SEARCH
