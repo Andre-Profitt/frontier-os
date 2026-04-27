@@ -335,7 +335,10 @@ export function ingestOrchestration(
   // Fail loud on duplicate ingest. Append-only + double-ingest silently
   // doubles every aggregate downstream (selectionRate, validityRate,
   // findings counts) — the operator must opt in via `force`.
-  if (!opts.force && packetAlreadyIngested(ledgerDir, packetId)) {
+  if (
+    !opts.force &&
+    packetAlreadyIngested(ledgerDir, packetId, { dryRun: opts.dryRun ?? false })
+  ) {
     throw new QualityLedgerError(
       `packet ${packetId} already ingested into ${ledgerDir}; pass force=true (CLI: --force-reingest) to override`,
       { packetId, ledgerDir },
@@ -588,6 +591,14 @@ function pathFor(ledgerDir: string, kind: QualityLedgerEvent["kind"]): string {
 // but no packets-index.jsonl (e.g. ingested by an earlier writer
 // version), readPacketIndex does a one-shot backfill on first call and
 // then trusts the manifest from then on.
+//
+// Patch I follow-up (PR #25 v2): the backfill is gated by an explicit
+// `backfill` option. dryRun ingestion MUST set backfill=false so a
+// "what would happen" call cannot mutate disk — the prior version
+// silently created `packets-index.jsonl` (and mkdir'd the ledger
+// directory) during a dryRun, violating the dryRun contract. The
+// in-memory packet set is still computed correctly so dedup detection
+// works in dryRun; only the disk write is suppressed.
 
 const PACKETS_INDEX_FILE = "packets-index.jsonl";
 
@@ -602,7 +613,11 @@ function packetIndexPath(ledgerDir: string): string {
   return resolve(ledgerDir, PACKETS_INDEX_FILE);
 }
 
-function readPacketIndex(ledgerDir: string): Set<string> {
+function readPacketIndex(
+  ledgerDir: string,
+  opts: { backfill?: boolean } = {},
+): Set<string> {
+  const backfill = opts.backfill ?? true;
   const indexFile = packetIndexPath(ledgerDir);
   if (existsSync(indexFile)) {
     const set = new Set<string>();
@@ -622,8 +637,10 @@ function readPacketIndex(ledgerDir: string): Set<string> {
     }
     return set;
   }
-  // Backfill path: no manifest yet but worker-runs.jsonl exists →
-  // scan once, write the manifest, return the populated Set.
+  // No manifest yet. Scan worker-runs.jsonl in-memory to build the
+  // packet set so dedup still works. Persist the backfill ONLY when
+  // backfill=true (default) — dryRun callers pass false so no disk
+  // write happens.
   const workerRunsFile = resolve(ledgerDir, "worker-runs.jsonl");
   if (!existsSync(workerRunsFile)) return new Set();
   const seen = new Map<string, PacketIndexRow>();
@@ -649,7 +666,7 @@ function readPacketIndex(ledgerDir: string): Set<string> {
       // Skip malformed worker_run line (reader has the same tolerance).
     }
   }
-  if (seen.size > 0) {
+  if (seen.size > 0 && backfill) {
     mkdirSync(ledgerDir, { recursive: true });
     const lines = [...seen.values()].map((r) => JSON.stringify(r) + "\n");
     appendFileSync(packetIndexPath(ledgerDir), lines.join(""));
@@ -657,8 +674,14 @@ function readPacketIndex(ledgerDir: string): Set<string> {
   return new Set(seen.keys());
 }
 
-function packetAlreadyIngested(ledgerDir: string, packetId: string): boolean {
-  return readPacketIndex(ledgerDir).has(packetId);
+function packetAlreadyIngested(
+  ledgerDir: string,
+  packetId: string,
+  opts: { dryRun?: boolean } = {},
+): boolean {
+  // dryRun must not write — disable backfill so the manifest stays off
+  // disk until a real ingest happens.
+  return readPacketIndex(ledgerDir, { backfill: !opts.dryRun }).has(packetId);
 }
 
 function appendPacketIndexRow(

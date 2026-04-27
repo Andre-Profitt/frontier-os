@@ -680,6 +680,102 @@ test("ingestOrchestration: backfills packets-index.jsonl from worker-runs.jsonl 
   });
 });
 
+// --- Patch I v2 (PR #25 re-review) — dryRun must NOT mutate disk ---------
+//
+// GPT Pro flagged: dryRun ingestion against a pre-Patch-I ledger
+// silently created packets-index.jsonl via the backfill path. dryRun
+// must compute the in-memory packet set so dedup detection still
+// works, but write nothing.
+
+function seedPrePatchILedger(ledgerDir: string): void {
+  // Simulate a pre-Patch-I ledger: worker-runs.jsonl exists, no manifest.
+  mkdirSync(ledgerDir, { recursive: true });
+  writeFileSync(
+    resolve(ledgerDir, "worker-runs.jsonl"),
+    JSON.stringify({
+      eventId: "old-1-wr-0",
+      taskId: "old-task",
+      packetId: "old-packet-1",
+      ts: "2026-04-01T00:00:00.000Z",
+      kind: "worker_run",
+      workerId: "b1",
+      role: "builder",
+      taskClass: "patch_builder",
+      phase: "collected",
+      ok: true,
+      arbiterOutcome: "selected",
+    }) + "\n",
+  );
+}
+
+test("ingestOrchestration dryRun=true: NEW packet on pre-Patch-I ledger does NOT create packets-index.jsonl", () => {
+  withTempLedger((ledgerDir) => {
+    seedPrePatchILedger(ledgerDir);
+    const input = buildSampleInput();
+    // packetId "orch-test-1" is NOT in the pre-Patch-I ledger.
+    const result = ingestOrchestration(input, { ledgerDir, dryRun: true });
+    // Returns events as if it would have written.
+    assert.ok(result.events.length > 0);
+    // But the manifest was NEVER created.
+    assert.equal(existsSync(resolve(ledgerDir, "packets-index.jsonl")), false);
+  });
+});
+
+test("ingestOrchestration dryRun=true: DUPLICATE packet on pre-Patch-I ledger throws AND does NOT create packets-index.jsonl", () => {
+  withTempLedger((ledgerDir) => {
+    seedPrePatchILedger(ledgerDir);
+    const input = buildSampleInput();
+    (input.packet as { packetId: string }).packetId = "old-packet-1";
+    // Duplicate detection still works in dryRun (computed in memory).
+    assert.throws(
+      () => ingestOrchestration(input, { ledgerDir, dryRun: true }),
+      QualityLedgerError,
+    );
+    // But the manifest was NEVER created — no disk mutation under dryRun.
+    assert.equal(existsSync(resolve(ledgerDir, "packets-index.jsonl")), false);
+  });
+});
+
+test("ingestOrchestration dryRun=false: NEW packet on pre-Patch-I ledger DOES backfill packets-index.jsonl", () => {
+  withTempLedger((ledgerDir) => {
+    seedPrePatchILedger(ledgerDir);
+    const input = buildSampleInput();
+    ingestOrchestration(input, { ledgerDir });
+    // Backfill ran (manifest now exists, contains both old + new packets).
+    const indexPath = resolve(ledgerDir, "packets-index.jsonl");
+    assert.equal(existsSync(indexPath), true);
+    const lines = readFileSync(indexPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const ids = lines.map((r: { packetId: string }) => r.packetId).sort();
+    assert.deepEqual(ids, ["old-packet-1", "orch-test-1"]);
+  });
+});
+
+test("ingestOrchestration dryRun=true: ZERO disk mutation — no manifest, no event files, no mkdir on a fresh dir", async () => {
+  // Strongest version of the dryRun contract: starting from a directory
+  // that doesn't even exist, dryRun must not create the directory or
+  // any file. (Pre-Patch-I ledger seeded above already creates the
+  // directory; here we test the cold-start path.)
+  const { mkdtempSync, rmSync, readdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const parent = mkdtempSync(join(tmpdir(), "dryrun-zero-"));
+  const ledgerDir = resolve(parent, "ledger-that-does-not-exist-yet");
+  try {
+    const input = buildSampleInput();
+    const result = ingestOrchestration(input, { ledgerDir, dryRun: true });
+    assert.ok(result.events.length > 0);
+    // ledgerDir must not have been created.
+    assert.equal(existsSync(ledgerDir), false);
+    // Parent dir is unchanged (just the ledgerDir entry was never made).
+    const entries = readdirSync(parent);
+    assert.deepEqual(entries, []);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 // GPT Pro Patch I — fix #2: ingestArtifactsDir used to silently skip a
 // declared review-packet path that wasn't on disk. Now it throws so the
 // ledger can't end up with fewer reviewer rows than the orchestration
