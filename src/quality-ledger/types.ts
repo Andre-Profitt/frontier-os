@@ -11,7 +11,8 @@ export type EventKind =
   | "worker_run"
   | "review_finding"
   | "arbiter_decision"
-  | "model_event";
+  | "model_event"
+  | "human_decision";
 
 export interface BaseEvent {
   eventId: string;
@@ -102,11 +103,30 @@ export interface ModelEvent extends BaseEvent {
   arbiterSelectedCount?: number;
 }
 
+// Human's actual decision after looking at the arbiter's recommendation.
+// PR Q2 writes these via `frontier quality mark`. PR Q3+ uses them as
+// ground-truth labels: when arbiterAgreed=false, the arbiter's pick was
+// overridden — that's signal for the model-routing flywheel.
+export interface HumanDecisionEvent extends BaseEvent {
+  kind: "human_decision";
+  decision: "accepted" | "rejected" | "escalation_resolved" | "deferred";
+  // Required when decision="accepted". The builder whose patch the
+  // human applied.
+  acceptedBuilderId?: string;
+  // True iff acceptedBuilderId matches the arbiter's recommended
+  // selectedBuilderId on the same packet. Computed at mark-time when
+  // both are known.
+  arbiterAgreed?: boolean;
+  reason: string;
+  decidedBy?: string;
+}
+
 export type QualityLedgerEvent =
   | WorkerRunEvent
   | ReviewFindingEvent
   | ArbiterDecisionEvent
-  | ModelEvent;
+  | ModelEvent
+  | HumanDecisionEvent;
 
 export class QualityLedgerError extends Error {
   constructor(

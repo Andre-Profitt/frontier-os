@@ -3811,6 +3811,89 @@ async function cmdQualityLedgerShow(
   );
 }
 
+async function cmdQualityMark(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const taskId =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const decisionRaw =
+    typeof args.flags.decision === "string" ? args.flags.decision : undefined;
+  const reason =
+    typeof args.flags.reason === "string" ? args.flags.reason : undefined;
+  if (!taskId || !decisionRaw || !reason) {
+    err({
+      error:
+        "quality mark requires --task <id> --decision <accepted|rejected|escalation_resolved|deferred> --reason <text> [--accepted-builder bN] [--artifacts <dir>] [--packet <id>] [--decided-by name] [--ledger-dir X] [--dry-run]",
+    });
+    return;
+  }
+  const validDecisions = new Set([
+    "accepted",
+    "rejected",
+    "escalation_resolved",
+    "deferred",
+  ]);
+  if (!validDecisions.has(decisionRaw)) {
+    err({
+      error: `--decision must be one of ${[...validDecisions].join(", ")}; got "${decisionRaw}"`,
+    });
+    return;
+  }
+  const decision = decisionRaw as
+    | "accepted"
+    | "rejected"
+    | "escalation_resolved"
+    | "deferred";
+  const acceptedBuilderId =
+    typeof args.flags["accepted-builder"] === "string"
+      ? args.flags["accepted-builder"]
+      : undefined;
+  if (decision === "accepted" && !acceptedBuilderId) {
+    err({
+      error:
+        "--decision=accepted requires --accepted-builder <bN> (the builder whose patch you applied)",
+    });
+    return;
+  }
+  const artifactsDir =
+    typeof args.flags.artifacts === "string" ? args.flags.artifacts : undefined;
+  const packetId =
+    typeof args.flags.packet === "string" ? args.flags.packet : undefined;
+  const decidedBy =
+    typeof args.flags["decided-by"] === "string"
+      ? args.flags["decided-by"]
+      : undefined;
+  const ledgerDir =
+    typeof args.flags["ledger-dir"] === "string"
+      ? args.flags["ledger-dir"]
+      : undefined;
+  const dryRun = args.flags["dry-run"] === true;
+
+  const { markHumanDecision } = await import("./quality-ledger/writer.ts");
+  const result = markHumanDecision(
+    {
+      taskId,
+      decision,
+      reason,
+      ...(acceptedBuilderId !== undefined ? { acceptedBuilderId } : {}),
+      ...(artifactsDir !== undefined ? { artifactsDir } : {}),
+      ...(packetId !== undefined ? { packetId } : {}),
+      ...(decidedBy !== undefined ? { decidedBy } : {}),
+    },
+    { ...(ledgerDir ? { ledgerDir } : {}), dryRun },
+  );
+  out(
+    {
+      event: result.event,
+      ledgerPath: result.ledgerPath,
+      arbiterAgreedComputed: result.arbiterAgreedComputed,
+      dryRun,
+    },
+    pretty,
+  );
+}
+
 async function cmdQualityModelScore(
   args: ParsedArgs,
   pretty: boolean,
@@ -5003,10 +5086,12 @@ async function main(): Promise<void> {
         }
       case "model-score":
         return cmdQualityModelScore(args, pretty);
+      case "mark":
+        return cmdQualityMark(args, pretty);
       default:
         return err({
           error: `unknown quality subcommand: ${args.subcommand ?? "(none)"}`,
-          expected: ["ledger ingest", "ledger show", "model-score"],
+          expected: ["ledger ingest", "ledger show", "model-score", "mark"],
         });
     }
   }

@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { appendFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 import type { ArbiterDecision } from "../arbiter/types.ts";
 import type {
@@ -371,6 +372,121 @@ export function ingestArtifactsDir(
   );
 }
 
+// --- Q2: human decision capture ------------------------------------------
+
+export interface MarkHumanDecisionInput {
+  taskId: string;
+  // Optional: the orchestration packet this decision relates to. When
+  // provided, the writer reads the packet's arbiter-decision.json to
+  // compute arbiterAgreed (acceptedBuilderId === selectedBuilderId).
+  packetId?: string;
+  // Path to the orchestration's artifacts dir, used to resolve packetId
+  // and compute arbiterAgreed when the caller didn't pass them.
+  artifactsDir?: string;
+  decision: "accepted" | "rejected" | "escalation_resolved" | "deferred";
+  // Required when decision="accepted".
+  acceptedBuilderId?: string;
+  reason: string;
+  decidedBy?: string;
+}
+
+export interface MarkResult {
+  event: import("./types.ts").HumanDecisionEvent;
+  appendedAt: string;
+  ledgerPath: string;
+  // True when the writer was able to compare against an arbiter
+  // decision (artifactsDir or packetId resolved). false → arbiterAgreed
+  // not computed.
+  arbiterAgreedComputed: boolean;
+}
+
+export function markHumanDecision(
+  input: MarkHumanDecisionInput,
+  opts: IngestOptions = {},
+): MarkResult {
+  const ledgerDir = opts.ledgerDir ?? DEFAULT_LEDGER_DIR;
+  const now = opts.now ?? Date.now;
+
+  if (input.decision === "accepted" && !input.acceptedBuilderId) {
+    throw new QualityLedgerError(
+      "decision='accepted' requires acceptedBuilderId",
+    );
+  }
+
+  // Resolve packetId + arbiterAgreed from artifactsDir if provided.
+  let packetId = input.packetId;
+  let arbiterAgreed: boolean | undefined;
+  let arbiterAgreedComputed = false;
+  if (input.artifactsDir) {
+    const arbPath = resolve(input.artifactsDir, "arbiter-decision.json");
+    const orchPath = resolve(input.artifactsDir, "orchestration-packet.json");
+    if (existsSync(orchPath)) {
+      try {
+        const orch = JSON.parse(
+          readFileSync(orchPath, "utf8"),
+        ) as OrchestrationPacket;
+        packetId = packetId ?? orch.packetId;
+      } catch {
+        // ignore — packetId stays undefined; we'll set a synthetic below
+      }
+    }
+    if (existsSync(arbPath) && input.acceptedBuilderId) {
+      try {
+        const arb = JSON.parse(
+          readFileSync(arbPath, "utf8"),
+        ) as ArbiterDecision;
+        arbiterAgreed = arb.selectedBuilderId === input.acceptedBuilderId;
+        arbiterAgreedComputed = true;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // Synthetic packetId when the caller didn't link to an orchestration.
+  // Operators may want to mark a decision before/without running the
+  // orchestrator (e.g. a hand-applied patch). Use crypto.randomUUID so
+  // two operators marking the same task in the same millisecond cannot
+  // collide.
+  const ts = new Date(now()).toISOString();
+  if (!packetId) packetId = `manual-${input.taskId}-${randomUUID()}`;
+
+  const event: import("./types.ts").HumanDecisionEvent = {
+    eventId: `${packetId}-hd-${randomUUID()}`,
+    taskId: input.taskId,
+    packetId,
+    ts,
+    kind: "human_decision",
+    decision: input.decision,
+    ...(input.acceptedBuilderId !== undefined
+      ? { acceptedBuilderId: input.acceptedBuilderId }
+      : {}),
+    ...(arbiterAgreed !== undefined ? { arbiterAgreed } : {}),
+    reason: input.reason,
+    ...(input.decidedBy !== undefined ? { decidedBy: input.decidedBy } : {}),
+  };
+
+  if (!validateQualityLedgerEvent(event)) {
+    throw new QualityLedgerError(
+      `human_decision event failed schema validation`,
+      { errors: validateQualityLedgerEvent.errors, event },
+    );
+  }
+
+  const ledgerPath = resolve(ledgerDir, "human-decisions.jsonl");
+  if (!opts.dryRun) {
+    mkdirSync(ledgerDir, { recursive: true });
+    appendFileSync(ledgerPath, JSON.stringify(event) + "\n");
+  }
+
+  return {
+    event,
+    appendedAt: ts,
+    ledgerPath,
+    arbiterAgreedComputed,
+  };
+}
+
 // --- helpers --------------------------------------------------------------
 
 function pathFor(ledgerDir: string, kind: QualityLedgerEvent["kind"]): string {
@@ -381,6 +497,8 @@ function pathFor(ledgerDir: string, kind: QualityLedgerEvent["kind"]): string {
       return resolve(ledgerDir, "review-findings.jsonl");
     case "arbiter_decision":
       return resolve(ledgerDir, "arbiter-decisions.jsonl");
+    case "human_decision":
+      return resolve(ledgerDir, "human-decisions.jsonl");
     case "model_event":
       return resolve(ledgerDir, "model-events.jsonl");
   }

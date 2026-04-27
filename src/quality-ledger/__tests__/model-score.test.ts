@@ -139,6 +139,7 @@ test("computeFromSnapshot: builder with all collected → collectedRate=1, selec
     reviewFindings: [],
     arbiterDecisions: [ad({ decision: "accept" })],
     modelEvents: [],
+    humanDecisions: [],
   });
   const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
     ModelScore,
@@ -178,6 +179,7 @@ test("computeFromSnapshot: builder with mixed phases → phases breakdown + coll
     reviewFindings: [],
     arbiterDecisions: [ad({ decision: "accept" })],
     modelEvents: [],
+    humanDecisions: [],
   });
   const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
     ModelScore,
@@ -216,6 +218,7 @@ test("computeFromSnapshot: builder mean rubric score + coverage over collected c
     reviewFindings: [],
     arbiterDecisions: [ad({ decision: "accept" })],
     modelEvents: [],
+    humanDecisions: [],
   });
   const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
     ModelScore,
@@ -265,6 +268,7 @@ test("computeFromSnapshot: highBugFindingsAgainst counts only when high-severity
     reviewFindings: [],
     arbiterDecisions: [ad({ decision: "escalate_to_human" })],
     modelEvents: [],
+    humanDecisions: [],
   });
   const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
     ModelScore,
@@ -290,6 +294,7 @@ test("computeFromSnapshot: candidates without modelKey are skipped", () => {
     reviewFindings: [],
     arbiterDecisions: [ad({ decision: "escalate_to_human" })],
     modelEvents: [],
+    humanDecisions: [],
   });
   assert.equal(scores.length, 0);
 });
@@ -332,6 +337,7 @@ test("computeFromSnapshot: reviewer findings aggregated by category and severity
         callsFailed: 0,
       }),
     ],
+    humanDecisions: [],
   });
   const rev = scores.find(
     (s) => s.modelKey === "nim:rev" && s.role === "reviewer",
@@ -360,6 +366,7 @@ test("computeFromSnapshot: reviewer validityRate = validRuns / runs", () => {
         callsFailed: 3,
       }),
     ],
+    humanDecisions: [],
   });
   const rev = scores.find((s) => s.modelKey === "nim:rev") as Extract<
     ModelScore,
@@ -400,6 +407,7 @@ test("computeFromSnapshot: role=builder filter excludes reviewers", () => {
           callsFailed: 0,
         }),
       ],
+      humanDecisions: [],
     },
     { role: "builder" },
   );
@@ -429,6 +437,7 @@ test("computeFromSnapshot: taskClass filter narrows to one class", () => {
       reviewFindings: [],
       arbiterDecisions: [],
       modelEvents: [],
+      humanDecisions: [],
     },
     { taskClass: "patch_builder" },
   );
@@ -459,6 +468,7 @@ test("computeFromSnapshot: builder scores sorted before reviewer scores", () => 
         callsFailed: 0,
       }),
     ],
+    humanDecisions: [],
   });
   assert.equal(scores.length, 2);
   assert.equal(scores[0]?.role, "builder");
