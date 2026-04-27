@@ -31,6 +31,10 @@ import { defaultGitRunner, type GitRunner } from "../builders/git.ts";
 import { loadPromptTemplate, loadSkill, type Skill } from "../skills/loader.ts";
 import { extractDiffs } from "./diff-extractor.ts";
 import { checkDiffScope } from "./diff-scope-checker.ts";
+import {
+  parseSearchReplaceBlocks,
+  applySearchReplaceBlocks,
+} from "./search-replace.ts";
 import { renderPrompt } from "./review-swarm.ts";
 
 export type CandidatePhase =
@@ -311,21 +315,90 @@ async function runOneBuilder(
   const modelKey = brokerResult.selected.modelKey;
   const rawText = brokerResult.selectedResponse?.text ?? "";
 
-  // ---- 4. extract diff ----
-  const diffs = extractDiffs(rawText);
-  if (diffs.length === 0) {
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "no_diff_extracted",
-      elapsedMs: now() - tStart,
-      errorMessage:
-        "broker returned text with no fenced diff and no inline diff header",
-      rawText,
-    };
+  // ---- 4. extract changes ----
+  // Patch M: prefer search/replace blocks over unified diff. First-real-
+  // orchestration data showed line-number drift in unified diffs is the
+  // dominant failure mode for general 70B models. S/R sidesteps it by
+  // matching exact text instead of line numbers. If the model emitted
+  // S/R blocks (Aider-style), apply them and synthesize a unified diff
+  // from `git diff` for the scope check + downstream pipeline. If no
+  // S/R blocks are present, fall back to unified-diff extraction (kept
+  // for backwards compat / models that prefer it).
+  const srParse = parseSearchReplaceBlocks(rawText);
+  let diffText: string;
+  // True when changes are ALREADY on disk in the worktree (we wrote
+  // them via search/replace). The unified-diff `git apply` step below
+  // must be skipped in that case — re-applying would fail with
+  // "patch already applied".
+  let alreadyApplied = false;
+  if (srParse.blocks.length > 0) {
+    const apply = applySearchReplaceBlocks(run.worktreePath, srParse.blocks);
+    if (!apply.ok) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "apply_failed",
+        elapsedMs: now() - tStart,
+        errorMessage: `search/replace apply failed: ${apply.error ?? "unknown"}`,
+        rawText,
+      };
+    }
+    // Synthesize a unified diff from the worktree state. The scope
+    // checker + downstream metadata extraction (file list, sizeBytes,
+    // line counts) consume unified diffs; rather than duplicate that
+    // logic for S/R, generate the canonical form once.
+    const diffRes = exec(["diff", "--no-color"], run.worktreePath);
+    if (!diffRes.ok) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "apply_failed",
+        elapsedMs: now() - tStart,
+        errorMessage: `search/replace applied but git diff failed: ${diffRes.stderr.trim() || "unknown"}`,
+        rawText,
+      };
+    }
+    diffText = diffRes.stdout;
+    if (diffText.trim().length === 0) {
+      // S/R applied but produced an empty diff — model said "replace
+      // X with X" effectively. Treat as no-op rather than success.
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "no_diff_extracted",
+        elapsedMs: now() - tStart,
+        errorMessage:
+          "search/replace blocks applied but resulted in zero net changes",
+        rawText,
+      };
+    }
+    alreadyApplied = true;
+  } else {
+    const diffs = extractDiffs(rawText);
+    if (diffs.length === 0) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "no_diff_extracted",
+        elapsedMs: now() - tStart,
+        errorMessage:
+          "broker returned text with no S/R blocks, no fenced diff, and no inline diff header",
+        rawText,
+      };
+    }
+    diffText = diffs[0]!.diff;
   }
 
   // ---- 4.5 scope check (Patch C / GPT Pro Issue #4 + E2 blocker #2) ----
@@ -339,7 +412,6 @@ async function runOneBuilder(
   // scope-controlled when it wasn't. Operator MUST opt out explicitly
   // (BuilderSwarmInput.allowUnscopedDiff = true) and the evidence
   // records that choice via the errorMessage / phase combination.
-  const diffText = diffs[0]!.diff;
   if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
     return {
       builderId,
@@ -372,24 +444,28 @@ async function runOneBuilder(
   }
 
   // ---- 5. git apply --check then apply ----
-  const applyOutcome = applyDiffToWorktree({
-    diffText,
-    worktreePath: run.worktreePath,
-    builderId,
-    exec,
-  });
-  if (!applyOutcome.ok) {
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
+  // Skipped when search/replace already wrote the changes directly —
+  // re-applying via `git apply` would fail with "patch already applied".
+  if (!alreadyApplied) {
+    const applyOutcome = applyDiffToWorktree({
+      diffText,
       worktreePath: run.worktreePath,
-      ok: false,
-      phase: "apply_failed",
-      elapsedMs: now() - tStart,
-      errorMessage: applyOutcome.message,
-      rawText,
-    };
+      builderId,
+      exec,
+    });
+    if (!applyOutcome.ok) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "apply_failed",
+        elapsedMs: now() - tStart,
+        errorMessage: applyOutcome.message,
+        rawText,
+      };
+    }
   }
 
   // ---- 6. commit ----
