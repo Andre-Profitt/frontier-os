@@ -3977,7 +3977,13 @@ async function cmdQualityScorecard(
     await import("./quality-ledger/scorecard-format.ts");
   // Print directly to stdout — table output is for humans, not for the
   // structured-out() path which would JSON-wrap it.
-  process.stdout.write(formatScorecardTable(scores) + "\n");
+  // includeEmptyRoles=true on the CLI path so an operator with an empty
+  // ledger sees "BUILDERS\n  (none)" rather than blank stdout (which
+  // reads as silent failure). The pure formatter still defaults to
+  // empty-string for programmatic callers.
+  process.stdout.write(
+    formatScorecardTable(scores, { includeEmptyRoles: true }) + "\n",
+  );
 }
 
 // ---- orchestrate family (PR R6: the loop) ----
