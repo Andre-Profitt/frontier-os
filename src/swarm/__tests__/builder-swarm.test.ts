@@ -347,6 +347,9 @@ index aaa..bbb 100644
         taskId: "t1",
         taskDescription: "do thing",
         builderCount: 1,
+        // Patch E2: scope the diff explicitly so we exercise the
+        // apply_failed path (not the new pre-apply scope_rejected).
+        touchList: ["missing.ts"],
         loadSkillImpl: () => syntheticSkill(),
         loadPromptTemplateImpl: () => TEMPLATE,
       },
@@ -379,6 +382,8 @@ test("runBuilderSwarm: end-to-end one builder applies + commits + collects", asy
         taskDescription: "add v=42",
         builderCount: 1,
         baseBranch: "main",
+        // Patch E2: SAMPLE_DIFF touches added.ts, so scope to that.
+        touchList: ["added.ts"],
         loadSkillImpl: () => syntheticSkill(),
         loadPromptTemplateImpl: () => TEMPLATE,
       },
@@ -424,6 +429,9 @@ test("runBuilderSwarm: end-to-end three builders, mixed success", async () => {
         taskDescription: "add v=42",
         builderCount: 3,
         baseBranch: "main",
+        // Patch E2: scope explicitly so b1's diff applies and b3's
+        // no-diff path still surfaces.
+        touchList: ["added.ts"],
         loadSkillImpl: () => syntheticSkill(),
         loadPromptTemplateImpl: () => TEMPLATE,
       },
@@ -748,9 +756,12 @@ test("runBuilderSwarm: diff inside touchList → applies, commits, collects (sco
   }
 });
 
-test("runBuilderSwarm: empty touchList → scope gate skipped, behaviour identical to pre-Patch-C", async () => {
-  // Backward-compat sanity: callers that don't pin scope (the
-  // current default) get the same behaviour they had before Patch C.
+// --- Patch E2 / GPT Pro Blocker #2: explicit unscoped-diff opt-in ----
+
+test("runBuilderSwarm: empty touchList without allowUnscopedDiff → scope_rejected (default deny)", async () => {
+  // Pre-Patch-E2 the gate silently disabled itself on empty touchList,
+  // making the swarm look scope-controlled when it wasn't. v2 default-
+  // denies; operator must explicitly choose allowUnscopedDiff: true.
   const broker = new StubBroker();
   broker.enqueue({
     ok: true,
@@ -764,15 +775,90 @@ test("runBuilderSwarm: empty touchList → scope gate skipped, behaviour identic
         worktreeManager: buildManager(repoRoot),
       },
       {
-        taskId: "no-scope",
-        taskDescription: "no touchList",
+        taskId: "no-scope-default",
+        taskDescription: "no touchList, no allowUnscopedDiff → must reject",
         builderCount: 1,
         baseBranch: "main",
+        // touchList omitted, allowUnscopedDiff omitted → default false
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "scope_rejected");
+    assert.equal(c?.ok, false);
+    assert.match(c?.errorMessage ?? "", /allowUnscopedDiff/);
+    // rawText preserved so a human can salvage the model's response.
+    assert.match(c?.rawText ?? "", /diff --git/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: empty touchList WITH allowUnscopedDiff=true → allowed (operator opted out)", async () => {
+  // Explicit operator choice: unscoped is OK for this run. Evidence
+  // shows it via allowUnscopedDiff in the packet input — humans can
+  // see whether the gate was active.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "explicit-unscoped",
+        taskDescription: "operator explicitly opted out of scope",
+        builderCount: 1,
+        baseBranch: "main",
+        allowUnscopedDiff: true, // ← explicit opt-out
         loadSkillImpl: () => syntheticSkill(),
         loadPromptTemplateImpl: () => TEMPLATE,
       },
     );
     assert.equal(packet.candidates[0]?.phase, "collected");
+    assert.equal(packet.candidates[0]?.ok, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: non-empty touchList ignores allowUnscopedDiff (gate runs as normal)", async () => {
+  // Sanity check: the flag only takes effect when touchList is empty.
+  // A populated touchList keeps the per-file scope check enforced.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "scoped-with-flag",
+        taskDescription: "touchList populated; flag should be inert",
+        builderCount: 1,
+        baseBranch: "main",
+        touchList: ["wrong-file.ts"], // diff touches added.ts → mismatch
+        allowUnscopedDiff: true, // does NOT relax per-file scope
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.equal(packet.candidates[0]?.phase, "scope_rejected");
+    assert.match(
+      packet.candidates[0]?.errorMessage ?? "",
+      /outside_touch_list/,
+    );
   } finally {
     cleanup();
   }

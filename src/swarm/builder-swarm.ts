@@ -64,7 +64,18 @@ export interface CandidatePatch {
 export interface BuilderSwarmInput {
   taskId: string;
   taskDescription: string;
+  // Files the builder is scoped to edit. When non-empty, the diff-scope
+  // gate rejects any diff touching files outside this list. When EMPTY
+  // (or omitted), the swarm requires `allowUnscopedDiff: true` —
+  // otherwise every candidate is scope_rejected up front. Pre-Patch-E2,
+  // an empty touchList silently disabled the gate, which let the
+  // builder swarm look scope-controlled when it wasn't. (GPT Pro
+  // second-pass blocker #2.)
   touchList?: string[];
+  // Required to opt out of scope checking when touchList is empty.
+  // Operator must explicitly choose unrestricted; the packet evidence
+  // records this choice. Default: false.
+  allowUnscopedDiff?: boolean;
   baseBranch?: string;
   builderCount?: number;
   taskClass?: string;
@@ -159,6 +170,7 @@ export async function runBuilderSwarm(
         taskId: input.taskId,
         taskDescription: input.taskDescription,
         touchList: input.touchList ?? [],
+        allowUnscopedDiff: input.allowUnscopedDiff ?? false,
         ...(input.baseBranch !== undefined
           ? { baseBranch: input.baseBranch }
           : {}),
@@ -209,6 +221,7 @@ interface RunOneBuilderInput {
   taskId: string;
   taskDescription: string;
   touchList: string[];
+  allowUnscopedDiff: boolean;
   baseBranch?: string;
   taskClass: string;
   builderCount: number;
@@ -301,12 +314,32 @@ async function runOneBuilder(
     };
   }
 
-  // ---- 4.5 scope check (Patch C / GPT Pro Issue #4) ----
+  // ---- 4.5 scope check (Patch C / GPT Pro Issue #4 + E2 blocker #2) ----
   // The model was prompted with a touchList, but it is free to ignore
   // that and patch unrelated files. The arbiter would otherwise see an
   // overbroad patch as if it were the requested change. We reject before
   // git apply so the worktree stays clean.
+  //
+  // E2: empty touchList without allowUnscopedDiff → reject up front.
+  // Pre-E2 this silently disabled the gate, which made the swarm look
+  // scope-controlled when it wasn't. Operator MUST opt out explicitly
+  // (BuilderSwarmInput.allowUnscopedDiff = true) and the evidence
+  // records that choice via the errorMessage / phase combination.
   const diffText = diffs[0]!.diff;
+  if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+    return {
+      builderId,
+      modelKey,
+      runId: run.runId,
+      worktreePath: run.worktreePath,
+      ok: false,
+      phase: "scope_rejected",
+      elapsedMs: now() - tStart,
+      errorMessage:
+        "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
+      rawText,
+    };
+  }
   const scopeCheck = checkDiffScope(diffText, {
     touchList: input.touchList,
   });
