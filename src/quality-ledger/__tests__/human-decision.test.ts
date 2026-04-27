@@ -343,6 +343,33 @@ test("markHumanDecision relation: escalation_resolved → 'escalation_resolved'"
   });
 });
 
+// Patch K self-review NB-3: edge case — arbiter file present but
+// arbiter chose escalate (no selectedBuilderId), then operator
+// accepts a specific builder out of band. The relation must be
+// "accepted_non_selected" (operator picked a builder the arbiter
+// explicitly DID NOT select), not "accepted_manual" (which is reserved
+// for "no arbiter to compare against").
+test("markHumanDecision relation: arbiter escalated (no selectedBuilderId) + human accepts → 'accepted_non_selected'", () => {
+  withTempDirs((ledgerDir, artifactsDir) => {
+    writeArbiterDecision(artifactsDir, undefined); // arbiter chose escalate
+    writeOrchestrationPacket(artifactsDir, "orch-pkt-esc");
+    const r = markHumanDecision(
+      {
+        taskId: "t1",
+        artifactsDir,
+        decision: "accepted",
+        acceptedBuilderId: "b7",
+        reason: "human resolved escalation by picking b7",
+      },
+      { ledgerDir },
+    );
+    assert.equal(r.event.humanOutcomeRelation, "accepted_non_selected");
+    // arbiterAgreed=false (selectedBuilderId is undefined, !== "b7").
+    assert.equal(r.event.arbiterAgreed, false);
+    assert.equal(r.arbiterAgreedComputed, true);
+  });
+});
+
 test("markHumanDecision relation: deferred → 'deferred'", () => {
   withTempDirs((ledgerDir) => {
     const r = markHumanDecision(

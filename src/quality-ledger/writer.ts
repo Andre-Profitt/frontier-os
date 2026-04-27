@@ -744,9 +744,13 @@ function computeHumanOutcomeRelation(
         ? "accepted_selected"
         : "accepted_non_selected";
     }
-    default:
-      return "unknown";
   }
+  // Exhaustiveness guard: TS will fail to compile if a new decision
+  // value is added without a case above. The "unknown" enum value
+  // remains in the schema for forward-compat with future readers, but
+  // the writer never produces it.
+  const exhaustive: never = input.decision;
+  return exhaustive;
 }
 
 function aggregateFindingsForLedger(
