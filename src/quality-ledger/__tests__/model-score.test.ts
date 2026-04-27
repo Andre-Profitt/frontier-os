@@ -76,7 +76,8 @@ function rf(opts: {
 
 function ad(opts: {
   decision: ArbiterDecisionEvent["decision"];
-  rerunVerificationOk?: boolean;
+  anyCandidateVerified?: boolean;
+  selectedCandidateVerified?: boolean;
 }): ArbiterDecisionEvent {
   return {
     eventId: "e-ad",
@@ -86,7 +87,8 @@ function ad(opts: {
     kind: "arbiter_decision",
     decision: opts.decision,
     candidatesEvaluated: 1,
-    rerunVerificationOk: opts.rerunVerificationOk ?? true,
+    anyCandidateVerified: opts.anyCandidateVerified ?? true,
+    selectedCandidateVerified: opts.selectedCandidateVerified ?? true,
   };
 }
 

@@ -86,7 +86,14 @@ export interface ArbiterDecisionEvent extends BaseEvent {
   qualityFloor?: number;
   candidatesEvaluated: number;
   // True iff at least one candidate's verifier re-run reached phase=passed.
-  rerunVerificationOk: boolean;
+  // Kept as a coarse signal; prefer selectedCandidateVerified for routing
+  // decisions because "any candidate passed" can overstate the arbiter
+  // decision when the picked candidate is NOT the one that passed.
+  anyCandidateVerified: boolean;
+  // True iff the candidate the arbiter selected reached phase=passed in
+  // the verifier re-run. False when no candidate was selected (e.g.
+  // decision=escalate_to_human or decision=reject).
+  selectedCandidateVerified: boolean;
 }
 
 // Per (modelKey, role, taskClass) aggregate within a single

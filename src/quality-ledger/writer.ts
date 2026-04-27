@@ -194,9 +194,24 @@ export function buildEvents(
   }
 
   // ---- arbiter_decision event: one per orchestration ----
-  const rerunOk = arbiterDecision.rerunVerification.results.some(
+  // Two signals:
+  //   anyCandidateVerified — coarse "did anyone pass." Useful for "did
+  //     the orchestration produce a verifiable patch at all" telemetry.
+  //   selectedCandidateVerified — "did the candidate WE PICKED pass."
+  //     This is the routing-decision signal; the recommender should
+  //     prefer it because "some candidate passed" can overstate the
+  //     arbiter decision when the picked candidate isn't that one
+  //     (or when no candidate was picked at all — escalate/reject).
+  const anyCandidateVerified = arbiterDecision.rerunVerification.results.some(
     (v) => v.phase === "passed",
   );
+  const selectedCandidateVerified =
+    arbiterDecision.selectedBuilderId !== undefined &&
+    arbiterDecision.rerunVerification.results.some(
+      (v) =>
+        v.builderId === arbiterDecision.selectedBuilderId &&
+        v.phase === "passed",
+    );
   const decisionEvent: ArbiterDecisionEvent = {
     eventId: eid("ad"),
     taskId: packet.taskId,
@@ -211,7 +226,8 @@ export function buildEvents(
       ? { qualityFloor: arbiterDecision.qualityFloor }
       : {}),
     candidatesEvaluated: arbiterDecision.candidatesEvaluated,
-    rerunVerificationOk: rerunOk,
+    anyCandidateVerified,
+    selectedCandidateVerified,
   };
   events.push(decisionEvent);
 
@@ -341,12 +357,27 @@ export function ingestOrchestration(
     else if (e.kind === "model_event") counts.modelEvents += 1;
   }
 
+  const appendedAt = new Date(now()).toISOString();
   if (!opts.dryRun) {
     mkdirSync(ledgerDir, { recursive: true });
     for (const e of events) {
       const file = pathFor(ledgerDir, e.kind);
       appendFileSync(file, JSON.stringify(e) + "\n");
     }
+    // Manifest row last so a crash mid-ingest leaves the manifest
+    // consistent with what's actually on disk (events first, then
+    // mark "this packet is ingested"). On re-run after such a crash,
+    // dedup will let the packet through and the events for it will be
+    // duplicated — accept that vs. risk a phantom dedup hit on a packet
+    // whose events aren't actually persisted.
+    appendPacketIndexRow(
+      ledgerDir,
+      input.packet.packetId,
+      input.packet.taskId,
+      // OrchestrationPacket has scannedAt; use it as the canonical ts.
+      input.packet.scannedAt,
+      appendedAt,
+    );
   }
 
   return {
@@ -354,7 +385,7 @@ export function ingestOrchestration(
     reviewFindings: counts.reviewFindings,
     arbiterDecisions: counts.arbiterDecisions,
     modelEvents: counts.modelEvents,
-    appendedAt: new Date(now()).toISOString(),
+    appendedAt,
     events,
   };
 }
@@ -378,11 +409,27 @@ export function ingestArtifactsDir(
   const builderPacket = JSON.parse(
     readFileSync(packet.builderPacketPath, "utf8"),
   ) as BuilderSwarmPacket;
+  // GPT Pro Patch I — fix #2: missing review packet paths used to be
+  // silently skipped, which produced a ledger with fewer reviewer rows
+  // than the orchestration promised and corrupted reviewer
+  // validityRate downstream. Treat missing artifacts as a data-integrity
+  // error — collect every miss and throw with the full list.
   const reviewPackets: Array<{ builderId: string; packet: ReviewPacket }> = [];
+  const missing: Array<{ builderId: string; path: string }> = [];
   for (const r of packet.reviewPacketPaths) {
-    if (!existsSync(r.path)) continue;
+    if (!existsSync(r.path)) {
+      missing.push({ builderId: r.builderId, path: r.path });
+      continue;
+    }
     const rp = JSON.parse(readFileSync(r.path, "utf8")) as ReviewPacket;
     reviewPackets.push({ builderId: r.builderId, packet: rp });
+  }
+  if (missing.length > 0) {
+    const list = missing.map((m) => `${m.builderId}=${m.path}`).join(", ");
+    throw new QualityLedgerError(
+      `orchestration packet ${packet.packetId} declares ${missing.length} review packet(s) but the file(s) are missing on disk: ${list}; refusing to ingest a partial ledger`,
+      { packetId: packet.packetId, missing },
+    );
   }
   const arbiterDecision = JSON.parse(
     readFileSync(packet.arbiterDecisionPath, "utf8"),
@@ -525,18 +572,104 @@ function pathFor(ledgerDir: string, kind: QualityLedgerEvent["kind"]): string {
   }
 }
 
-// Has any event for this packetId already been written? worker-runs.jsonl
-// is the cheapest single file to scan because every orchestration writes
-// at least one worker_run row (one per builder candidate). We do a
-// streaming substring scan on the JSON quoted field instead of parsing
-// every line — fast on a 100k-row file and correct because packetId is
-// a JSON string field, not a free-form value.
+// GPT Pro Patch I — fix #1: packet dedup via a dedicated manifest
+// (state/quality-ledger/packets-index.jsonl), one row per ingested
+// packet. Replaces the prior O(file size) substring scan over
+// worker-runs.jsonl, which would have become the ingest bottleneck at
+// 100k+ event rows. The index file is small and grows linearly with
+// orchestrations, not events.
+//
+// Each row: {packetId, taskId, ts, ingestedAt}. taskId/ts are
+// duplicated from the OrchestrationPacket so an operator can `cat`
+// the manifest and see what's been ingested without parsing the full
+// event ledger.
+//
+// Backwards-compat: if a ledger directory has worker-runs.jsonl rows
+// but no packets-index.jsonl (e.g. ingested by an earlier writer
+// version), readPacketIndex does a one-shot backfill on first call and
+// then trusts the manifest from then on.
+
+const PACKETS_INDEX_FILE = "packets-index.jsonl";
+
+interface PacketIndexRow {
+  packetId: string;
+  taskId: string;
+  ts: string;
+  ingestedAt: string;
+}
+
+function packetIndexPath(ledgerDir: string): string {
+  return resolve(ledgerDir, PACKETS_INDEX_FILE);
+}
+
+function readPacketIndex(ledgerDir: string): Set<string> {
+  const indexFile = packetIndexPath(ledgerDir);
+  if (existsSync(indexFile)) {
+    const set = new Set<string>();
+    const text = readFileSync(indexFile, "utf8");
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      try {
+        const row = JSON.parse(trimmed) as PacketIndexRow;
+        if (typeof row.packetId === "string") set.add(row.packetId);
+      } catch {
+        // Malformed manifest line — skip (writer never produces these,
+        // but operator hand-edits could corrupt). The ingest path
+        // appends new rows regardless; we don't refuse to dedup just
+        // because someone cat'd garbage into the manifest.
+      }
+    }
+    return set;
+  }
+  // Backfill path: no manifest yet but worker-runs.jsonl exists →
+  // scan once, write the manifest, return the populated Set.
+  const workerRunsFile = resolve(ledgerDir, "worker-runs.jsonl");
+  if (!existsSync(workerRunsFile)) return new Set();
+  const seen = new Map<string, PacketIndexRow>();
+  const text = readFileSync(workerRunsFile, "utf8");
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const row = JSON.parse(trimmed) as {
+        packetId?: unknown;
+        taskId?: unknown;
+        ts?: unknown;
+      };
+      if (typeof row.packetId !== "string") continue;
+      if (seen.has(row.packetId)) continue;
+      seen.set(row.packetId, {
+        packetId: row.packetId,
+        taskId: typeof row.taskId === "string" ? row.taskId : "",
+        ts: typeof row.ts === "string" ? row.ts : "",
+        ingestedAt: "backfill",
+      });
+    } catch {
+      // Skip malformed worker_run line (reader has the same tolerance).
+    }
+  }
+  if (seen.size > 0) {
+    mkdirSync(ledgerDir, { recursive: true });
+    const lines = [...seen.values()].map((r) => JSON.stringify(r) + "\n");
+    appendFileSync(packetIndexPath(ledgerDir), lines.join(""));
+  }
+  return new Set(seen.keys());
+}
+
 function packetAlreadyIngested(ledgerDir: string, packetId: string): boolean {
-  const file = resolve(ledgerDir, "worker-runs.jsonl");
-  if (!existsSync(file)) return false;
-  const needle = `"packetId":${JSON.stringify(packetId)}`;
-  const text = readFileSync(file, "utf8");
-  return text.includes(needle);
+  return readPacketIndex(ledgerDir).has(packetId);
+}
+
+function appendPacketIndexRow(
+  ledgerDir: string,
+  packetId: string,
+  taskId: string,
+  ts: string,
+  ingestedAt: string,
+): void {
+  const row: PacketIndexRow = { packetId, taskId, ts, ingestedAt };
+  appendFileSync(packetIndexPath(ledgerDir), JSON.stringify(row) + "\n");
 }
 
 // Aggregate the review packet's findings for the candidate's worker_run

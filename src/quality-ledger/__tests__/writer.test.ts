@@ -9,7 +9,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -391,13 +398,14 @@ test("buildEvents: one arbiter_decision per orchestration", () => {
   });
   const ad = events.filter((e) => e.kind === "arbiter_decision");
   assert.equal(ad.length, 1);
-  assert.equal(
-    "rerunVerificationOk" in ad[0]! && ad[0]!.rerunVerificationOk,
-    true,
-  );
+  if (ad[0] && "selectedCandidateVerified" in ad[0]) {
+    // Selected candidate (b1) reached phase=passed → both signals true.
+    assert.equal(ad[0].anyCandidateVerified, true);
+    assert.equal(ad[0].selectedCandidateVerified, true);
+  }
 });
 
-test("buildEvents: rerunVerificationOk false when no candidate verified pass", () => {
+test("buildEvents: both verification flags false when no candidate verified pass", () => {
   const events = buildEvents({
     packet: makePacket(),
     builderPacket: makeBuilderPacket({
@@ -418,8 +426,76 @@ test("buildEvents: rerunVerificationOk false when no candidate verified pass", (
     }),
   });
   const ad = events.find((e) => e.kind === "arbiter_decision");
-  if (ad && "rerunVerificationOk" in ad) {
-    assert.equal(ad.rerunVerificationOk, false);
+  if (ad && "selectedCandidateVerified" in ad) {
+    assert.equal(ad.anyCandidateVerified, false);
+    assert.equal(ad.selectedCandidateVerified, false);
+  }
+});
+
+// GPT Pro Patch I — fix #4 regression: any-candidate passed but the
+// SELECTED candidate did not. Old `rerunVerificationOk = .some(passed)`
+// would have returned true here, overstating the arbiter decision.
+test("buildEvents: anyCandidateVerified=true but selectedCandidateVerified=false when picked candidate failed verifier", () => {
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+        },
+        {
+          builderId: "b2",
+          modelKey: "nim:k2",
+          phase: "collected",
+          withPatch: true,
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 2,
+      // b1 is selected but FAILED verifier; b2 passed but wasn't picked.
+      rerunPhases: { b1: "typecheck_failed", b2: "passed" },
+    }),
+  });
+  const ad = events.find((e) => e.kind === "arbiter_decision");
+  if (ad && "selectedCandidateVerified" in ad) {
+    assert.equal(ad.anyCandidateVerified, true);
+    assert.equal(ad.selectedCandidateVerified, false);
+  }
+});
+
+// Escalate / reject paths: no candidate selected → selectedCandidateVerified
+// must be false even if some candidate passed verifier.
+test("buildEvents: selectedCandidateVerified=false when no candidate selected", () => {
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "escalate_to_human",
+      candidatesEvaluated: 1,
+      rerunPhases: { b1: "passed" }, // candidate passed but arbiter escalated
+    }),
+  });
+  const ad = events.find((e) => e.kind === "arbiter_decision");
+  if (ad && "selectedCandidateVerified" in ad) {
+    assert.equal(ad.anyCandidateVerified, true);
+    assert.equal(ad.selectedCandidateVerified, false);
   }
 });
 
@@ -548,4 +624,154 @@ test("ingestOrchestration: written JSONL is line-delimited valid JSON", () => {
       assert.equal(parsed.kind, "worker_run");
     }
   });
+});
+
+// GPT Pro Patch I — fix #1: dedup is now via packets-index.jsonl, not
+// a substring scan over worker-runs.jsonl. Pin three behaviors:
+//   1. The index file appears after first ingest.
+//   2. Re-ingest is detected via the index even if worker-runs.jsonl
+//      is empty (e.g. a packet that produced no candidates).
+//   3. A pre-existing worker-runs.jsonl with no manifest gets a
+//      one-shot backfill, then dedup works against the manifest.
+test("ingestOrchestration: writes packets-index.jsonl on first ingest", () => {
+  withTempLedger((ledgerDir) => {
+    ingestOrchestration(buildSampleInput(), { ledgerDir });
+    const indexPath = resolve(ledgerDir, "packets-index.jsonl");
+    assert.equal(existsSync(indexPath), true);
+    const text = readFileSync(indexPath, "utf8").trim();
+    const row = JSON.parse(text);
+    assert.equal(row.packetId, "orch-test-1");
+    assert.equal(row.taskId, "task-1");
+    assert.equal(typeof row.ingestedAt, "string");
+  });
+});
+
+test("ingestOrchestration: backfills packets-index.jsonl from worker-runs.jsonl on first ingest after upgrade", () => {
+  withTempLedger((ledgerDir) => {
+    // Simulate a pre-Patch-I ledger directory: worker-runs.jsonl has
+    // rows but no manifest exists.
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(
+      resolve(ledgerDir, "worker-runs.jsonl"),
+      JSON.stringify({
+        eventId: "old-1-wr-0",
+        taskId: "old-task",
+        packetId: "old-packet-1",
+        ts: "2026-04-01T00:00:00.000Z",
+        kind: "worker_run",
+        workerId: "b1",
+        role: "builder",
+        taskClass: "patch_builder",
+        phase: "collected",
+        ok: true,
+        arbiterOutcome: "selected",
+      }) + "\n",
+    );
+    // Re-ingesting the OLD packetId should now throw, because the
+    // backfill path picked it up from worker-runs.jsonl.
+    const oldInput = buildSampleInput();
+    (oldInput.packet as { packetId: string }).packetId = "old-packet-1";
+    assert.throws(
+      () => ingestOrchestration(oldInput, { ledgerDir }),
+      QualityLedgerError,
+    );
+    // And the manifest now exists.
+    assert.equal(existsSync(resolve(ledgerDir, "packets-index.jsonl")), true);
+  });
+});
+
+// GPT Pro Patch I — fix #2: ingestArtifactsDir used to silently skip a
+// declared review-packet path that wasn't on disk. Now it throws so the
+// ledger can't end up with fewer reviewer rows than the orchestration
+// promised (which would otherwise inflate reviewer validityRate).
+test("ingestArtifactsDir: throws when a declared review packet path is missing", async () => {
+  const { ingestArtifactsDir } = await import("../writer.ts");
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "ingest-missing-"));
+  try {
+    const builderPath = resolve(dir, "builder-packet.json");
+    const arbPath = resolve(dir, "arbiter-decision.json");
+    writeFileSync(
+      resolve(dir, "orchestration-packet.json"),
+      JSON.stringify({
+        packetId: "orch-missing-rev",
+        taskId: "t1",
+        scannedAt: "2026-04-27T00:00:00.000Z",
+        input: { taskDescription: "x", builderCount: 1, reviewerCount: 2 },
+        builderPacketPath: builderPath,
+        // Reference 2 review-packet paths; only one will exist on disk.
+        reviewPacketPaths: [
+          { builderId: "b1", path: resolve(dir, "review-packet-b1.json") },
+          { builderId: "b2", path: resolve(dir, "review-packet-b2.json") },
+        ],
+        arbiterDecisionPath: arbPath,
+        finalReportPath: resolve(dir, "final.md"),
+        artifactsDir: dir,
+        exitCode: 0,
+        elapsedMs: 1,
+      }),
+    );
+    writeFileSync(
+      builderPath,
+      JSON.stringify({
+        packetId: "build-1",
+        scannedAt: "2026-04-27T00:00:00.000Z",
+        taskId: "t1",
+        taskClass: "patch_builder",
+        builderCount: 1,
+        modelsUsed: [],
+        candidates: [],
+        elapsedMs: 1,
+      }),
+    );
+    // Only b1's review packet exists; b2's is missing on disk.
+    writeFileSync(
+      resolve(dir, "review-packet-b1.json"),
+      JSON.stringify({
+        packetId: "rev-b1",
+        scannedAt: "2026-04-27T00:00:00.000Z",
+        taskClass: "adversarial_review",
+        diffSource: { kind: "inline" },
+        reviewerCount: 1,
+        validReviewerCount: 1,
+        invalidReviewerCount: 0,
+        failedReviewerCount: 0,
+        reviewCoverage: 1,
+        modelsUsed: [],
+        reviewers: [],
+        totalFindings: 0,
+        findingsBySeverity: { high: 0, medium: 0, low: 0 },
+        findingsByCategory: {},
+        elapsedMs: 1,
+      }),
+    );
+    writeFileSync(
+      arbPath,
+      JSON.stringify({
+        decisionId: "arb-1",
+        scannedAt: "2026-04-27T00:00:00.000Z",
+        taskId: "t1",
+        decision: "escalate_to_human",
+        candidatesEvaluated: 0,
+        rerunVerification: { builderIds: [], results: [] },
+        rubricScores: [],
+        antiExampleMatches: [],
+        evidence: "x",
+      }),
+    );
+    withTempLedger((ledgerDir) => {
+      assert.throws(
+        () => ingestArtifactsDir(dir, { ledgerDir }),
+        (e: unknown) => {
+          if (!(e instanceof QualityLedgerError)) return false;
+          assert.match(e.message, /missing on disk/);
+          assert.match(e.message, /b2/);
+          return true;
+        },
+      );
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
