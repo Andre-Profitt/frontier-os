@@ -33,8 +33,11 @@
       "maxParallel": 4
     },
     "patch_builder": {
-      "summary": "Generate code patches in isolated worktrees. Local-only on this host until NIM is enabled. qwen2.5:72b is primary; deepseek-coder:33b-instruct was tried as the diversity alt but produced 0 collected diffs across 5 attempts on 2026-04-27 — it returns prose without a fenced diff block, so the diff extractor finds nothing. Re-add when a code-shaped frontier model (e.g. qwen2.5-coder:14b once pulled) is available.",
-      "models": [{ "provider": "ollama-local", "model": "qwen2.5:72b" }],
+      "summary": "Generate code patches in isolated worktrees. Local-only on this host until NIM is enabled. qwen2.5-coder:14b is primary now that it's pulled (code-tuned, smaller + faster + better at structured output than the general 72B). qwen2.5:72b stays as the diversity alt — has produced the only arbiter-accepted patches so far (2026-04-27, selectionRate 1/14 ≈ 0.07). Re-evaluate after qwen2.5-coder:14b accumulates ≥3 packets of evidence.",
+      "models": [
+        { "provider": "ollama-local", "model": "qwen2.5-coder:14b" },
+        { "provider": "ollama-local", "model": "qwen2.5:72b" }
+      ],
       "maxParallel": 1
     },
     "adversarial_review": {
