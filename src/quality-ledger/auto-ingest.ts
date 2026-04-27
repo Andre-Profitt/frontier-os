@@ -1,8 +1,14 @@
 // Auto-ingest helper for `frontier orchestrate` (Patch J). Pure
 // wrapper around ingestArtifactsDir that:
-//   - skips when opts.skip=true (operator opt-out via --skip-ingest)
-//   - skips when the orchestration didn't succeed (exitCode !== 0) so
-//     we don't pollute the routing memory with incomplete runs
+//   - skips ONLY when opts.skip=true (operator opt-out via
+//     --skip-ingest). Patch J self-review NB1: ingest on ALL three
+//     orchestration exit codes (0=accept, 1=reject, 2=escalate). All
+//     three are completed orchestrations with full evidence (worker
+//     runs, review findings, arbiter decision); reject/escalate are
+//     SIGNAL ("which models produce candidates the arbiter rejects"
+//     and "which models cause escalations"), not failure modes. A
+//     truly broken orchestration throws from runOrchestration before
+//     we ever reach this helper.
 //   - traps any QualityLedgerError so an ingest failure (e.g. duplicate
 //     packetId, schema mismatch) doesn't mask the orchestration's
 //     primary result. The operator can always re-ingest by hand:
@@ -43,13 +49,8 @@ export function autoIngestOrchestration(
   if (opts.skip) {
     return { attempted: false, ok: false, reason: "skipped via --skip-ingest" };
   }
-  if (packet.exitCode !== 0) {
-    return {
-      attempted: false,
-      ok: false,
-      reason: `orchestration exitCode=${packet.exitCode}; ingest skipped to keep ledger free of incomplete runs`,
-    };
-  }
+  // No exitCode guard: 0/1/2 all reflect a completed orchestration
+  // with full evidence. See module header.
   const ingest = opts.ingestImpl ?? ingestArtifactsDir;
   try {
     const ingestOpts: IngestOptions = {};

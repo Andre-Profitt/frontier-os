@@ -74,7 +74,10 @@ test("autoIngestOrchestration: skip=true → not attempted, reason explains", ()
   assert.match(status.reason ?? "", /skip-ingest/);
 });
 
-test("autoIngestOrchestration: exitCode != 0 → not attempted, ledger stays clean of failed runs", () => {
+test("autoIngestOrchestration: exitCode=1 (reject) IS ingested — reject is signal, not failure", () => {
+  // Patch J self-review NB1: arbiter-reject is a completed
+  // orchestration with full evidence. Skipping it would lose signal
+  // about which models produce sub-bar candidates.
   let called = 0;
   const status = autoIngestOrchestration(packet({ exitCode: 1 }), {
     ingestImpl: () => {
@@ -82,10 +85,22 @@ test("autoIngestOrchestration: exitCode != 0 → not attempted, ledger stays cle
       return fakeResult();
     },
   });
-  assert.equal(called, 0);
-  assert.equal(status.attempted, false);
-  assert.equal(status.ok, false);
-  assert.match(status.reason ?? "", /exitCode=1/);
+  assert.equal(called, 1);
+  assert.equal(status.attempted, true);
+  assert.equal(status.ok, true);
+});
+
+test("autoIngestOrchestration: exitCode=2 (escalate) IS ingested — escalation is signal", () => {
+  let called = 0;
+  const status = autoIngestOrchestration(packet({ exitCode: 2 }), {
+    ingestImpl: () => {
+      called++;
+      return fakeResult();
+    },
+  });
+  assert.equal(called, 1);
+  assert.equal(status.attempted, true);
+  assert.equal(status.ok, true);
 });
 
 // --- failure trap --------------------------------------------------------
@@ -148,11 +163,11 @@ test("autoIngestOrchestration: skip=true wins over exitCode=0 (operator opt-out 
   assert.match(status.reason ?? "", /skip-ingest/);
 });
 
-test("autoIngestOrchestration: skip=false + exitCode=2 → still skipped (failed-run guard)", () => {
-  const status = autoIngestOrchestration(packet({ exitCode: 2 }), {
-    skip: false,
+test("autoIngestOrchestration: skip=true wins over exitCode=1 (reject) — opt-out is sticky on any verdict", () => {
+  const status = autoIngestOrchestration(packet({ exitCode: 1 }), {
+    skip: true,
     ingestImpl: () => fakeResult(),
   });
   assert.equal(status.attempted, false);
-  assert.match(status.reason ?? "", /exitCode=2/);
+  assert.match(status.reason ?? "", /skip-ingest/);
 });
