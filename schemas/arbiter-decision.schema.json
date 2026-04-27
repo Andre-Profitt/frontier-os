@@ -64,6 +64,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/antiExampleMatch" }
     },
+    "missingAntiExamplePaths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Anti-example paths the caller passed but the arbiter could not load. Non-empty triggers config-error escalation. (Patch G B3.)"
+    },
     "evidence": {
       "type": "string",
       "minLength": 1,

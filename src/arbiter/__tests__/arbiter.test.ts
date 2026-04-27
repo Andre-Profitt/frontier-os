@@ -643,6 +643,32 @@ test("decide: missing anti-example file → escalate (config error, not silent s
   assert.equal(dec.decision, "escalate_to_human");
   assert.match(dec.escalationQuestion ?? "", /could not load.*anti-example/);
   assert.match(dec.evidence, /Anti-example config error/);
+  // Patch G B3: missingAntiExamplePaths surfaces on the decision so
+  // the orchestrator's report can render it above the decision line.
+  assert.deepEqual(dec.missingAntiExamplePaths, ["/never/exists.md"]);
+});
+
+test("decide (Patch G B3): missingAntiExamplePaths absent when no anti-example paths failed", async () => {
+  const verifierImpl = () => passedVerification("b1");
+  const dec = await decide({
+    taskId: "t1",
+    candidates: [candidate("b1")],
+    reviewerFindings: [
+      {
+        builderId: "b1",
+        findingsBySeverity: {},
+        findingsByCategory: {},
+        reviewCoverage: 1.0,
+      },
+    ],
+    rubricPath: "/synthetic/r.json",
+    loadRubricImpl: () => syntheticRubric(),
+    loadAntiExampleImpl: () => "",
+    antiExamplePaths: [],
+    verifierImpl,
+    qualityFloor: 0.5,
+  });
+  assert.equal(dec.missingAntiExamplePaths, undefined);
 });
 
 // --- decision: anti-example match excludes candidate ----------------------

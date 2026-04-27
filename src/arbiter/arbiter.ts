@@ -396,6 +396,7 @@ export async function decide(input: ArbiterInput): Promise<ArbiterDecision> {
     },
     rubricScores,
     antiExampleMatches,
+    ...(missingAntiExamplePaths.length > 0 ? { missingAntiExamplePaths } : {}),
     evidence,
     elapsedMs: now() - t0,
   };

@@ -260,10 +260,18 @@ export async function runOrchestration(
   // ---- 5. Optional cleanup of builder worktrees ----
   // After the arbiter has decided, the worktrees can usually be removed
   // unless the operator wants to inspect them. Default: keep.
+  //
+  // PATCH G B2: when the arbiter accepted a candidate, KEEP that
+  // candidate's worktree even with --cleanup, because the operator
+  // needs to apply its patch (final report points them at it). Removing
+  // it before the operator can act would leave the report's "apply
+  // from worktree X" instruction broken.
   if (input.cleanup) {
+    const preserveBuilderId = arbiterDecision.selectedBuilderId;
     for (const c of builderPacket.candidates) {
       const runId = c.runId;
       if (!runId) continue;
+      if (preserveBuilderId && c.builderId === preserveBuilderId) continue;
       try {
         deps.worktreeManager.remove(runId, { force: true });
       } catch {
