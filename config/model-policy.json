@@ -1,10 +1,11 @@
 {
   "$schema": "../schemas/model-policy.schema.json",
   "version": "v1",
-  "summary": "Task-class → model routing for the inference broker. Local-only by default; add NIM models after `frontier model probe nvidia-nim` produces empirical capacity numbers.",
+  "summary": "Task-class → model routing for the inference broker. Local-first (Ollama) for daily / offline; NVIDIA NIM hybrid for frontier coder models that don't fit on local hardware (Patch N).",
   "providers": {
     "nvidia-nim": {
-      "enabled": false,
+      "enabled": true,
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
       "envKeyVar": "NVIDIA_API_KEY",
       "envKeyVarFallback": "NIM_API_KEY",
       "baseUrlOverrideEnvVar": "NIM_BASE_URL",
@@ -33,18 +34,36 @@
       "maxParallel": 4
     },
     "patch_builder": {
-      "summary": "Generate code patches in isolated worktrees. Local-only on this host until NIM is enabled. qwen2.5-coder:14b is primary now that it's pulled (code-tuned, smaller + faster + better at structured output than the general 72B). qwen2.5:72b stays as the diversity alt — has produced the only arbiter-accepted patches so far (2026-04-27, selectionRate 1/14 ≈ 0.07). Re-evaluate after qwen2.5-coder:14b accumulates ≥3 packets of evidence.",
+      "summary": "Generate code patches in isolated worktrees. Patch N (2026-04-27): NIM enabled, hybrid local+NIM. Local first for offline / daily, NIM frontier coder when it fits the prompt. Order: smaller-fast → bigger-accurate. qwen2.5-coder:14b validated as local primary (selectionRate 2/3 in Patch M comparison batch). qwen2.5:72b is the local diversity alt (1/16, but the wins are real). NIM coder models are unproven on this loop — bake at low volume to compare Wilson lower bounds vs. local before promoting.",
       "models": [
         { "provider": "ollama-local", "model": "qwen2.5-coder:14b" },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" }
+        { "provider": "ollama-local", "model": "qwen2.5:72b" },
+        { "provider": "ollama-local", "model": "aegis-main:latest" },
+        { "provider": "ollama-local", "model": "dolphin-llama3:70b" },
+        {
+          "provider": "nvidia-nim",
+          "model": "qwen/qwen2.5-coder-32b-instruct"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model": "qwen/qwen3-coder-480b-a35b-instruct"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model": "moonshotai/kimi-k2-instruct-0905"
+        },
+        { "provider": "nvidia-nim", "model": "deepseek-ai/deepseek-v4-pro" }
       ],
       "maxParallel": 1
     },
     "adversarial_review": {
-      "summary": "Attack a candidate patch. Diversity matters more than raw quality. deepseek-coder is the primary attacker (code-aware); qwen2.5:72b reviews from a general-knowledge angle.",
+      "summary": "Attack a candidate patch. Diversity matters more than raw quality — different model families surface different bug classes. Patch N adds NIM Kimi-thinking + GLM for diversity beyond the local Qwen+DeepSeek pair.",
       "models": [
         { "provider": "ollama-local", "model": "deepseek-coder:33b-instruct" },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" }
+        { "provider": "ollama-local", "model": "qwen2.5:72b" },
+        { "provider": "ollama-local", "model": "dolphin-llama3:70b" },
+        { "provider": "nvidia-nim", "model": "moonshotai/kimi-k2-thinking" },
+        { "provider": "nvidia-nim", "model": "z-ai/glm-5.1" }
       ],
       "maxParallel": 1
     },

@@ -9,6 +9,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
+import { resolveCredential } from "../core/credentials.ts";
+
 const HERE = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(HERE), "..", "..");
 const DEFAULT_POLICY_PATH = resolve(REPO_ROOT, "config", "model-policy.json");
@@ -52,11 +54,18 @@ export interface ModelPolicy {
 export interface RegistryOptions {
   policyPath?: string;
   env?: NodeJS.ProcessEnv;
+  // Test seam — inject the credential resolver. When `env` is also
+  // injected (test mode), the default is a no-op resolver so tests can
+  // pin "this env has nothing" without leaking ~/.env. In production
+  // (no `env` passed), the default is the real resolver which reads
+  // dotenv files.
+  resolveCredentialImpl?: (key: string) => string | undefined;
 }
 
 export class ModelRegistry {
   readonly policy: ModelPolicy;
   private env: NodeJS.ProcessEnv;
+  private resolveCredentialImpl: (key: string) => string | undefined;
 
   constructor(opts: RegistryOptions = {}) {
     const path = opts.policyPath ?? DEFAULT_POLICY_PATH;
@@ -66,6 +75,16 @@ export class ModelRegistry {
     const raw = readFileSync(path, "utf8");
     this.policy = JSON.parse(raw) as ModelPolicy;
     this.env = opts.env ?? process.env;
+    // If env is injected explicitly, the resolver defaults to no-op
+    // (tests stay hermetic). If env is process.env, the resolver
+    // defaults to the real one (production behaviour).
+    if (opts.resolveCredentialImpl !== undefined) {
+      this.resolveCredentialImpl = opts.resolveCredentialImpl;
+    } else if (opts.env !== undefined) {
+      this.resolveCredentialImpl = () => undefined;
+    } else {
+      this.resolveCredentialImpl = resolveCredential;
+    }
   }
 
   listProviderNames(): string[] {
@@ -84,20 +103,29 @@ export class ModelRegistry {
 
   // A provider is effectively enabled iff:
   //   - policy says enabled: true
-  //   - any required envKeyVar / fallback is present (cloud providers)
+  //   - any required envKeyVar / fallback resolves (cloud providers)
   //   - or a baseUrl is configured locally (local providers)
+  //
+  // Patch N (2026-04-27): "resolves" now means via the credential
+  // resolver (process.env first, then ~/frontier-os/.env, then ~/.env),
+  // not just process.env directly. Pre-Patch-N this method returned
+  // false for any provider whose key lived in a dotenv file even
+  // though the actual call would have succeeded — confusing.
   providerEffectivelyEnabled(p: ProviderEntry): boolean {
     if (!p.enabled) return false;
     if (p.envKeyVar) {
-      const direct = this.env[p.envKeyVar];
-      const fallback = p.envKeyVarFallback ? this.env[p.envKeyVarFallback] : "";
+      const direct = this.lookupCredential(p.envKeyVar);
+      const fallback = p.envKeyVarFallback
+        ? this.lookupCredential(p.envKeyVarFallback)
+        : "";
       if (!direct && !fallback) return false;
     }
     return true;
   }
 
-  // Resolve auth for a provider. Returns the resolved key (env-driven)
-  // or null for local providers / when missing.
+  // Resolve auth for a provider. Returns the resolved key or null.
+  // Goes through the credential resolver (Patch N) so dotenv files
+  // are picked up without a manual `export`.
   resolveApiKey(name: string): string | null {
     const entry = this.policy.providers[name];
     if (!entry) return null;
@@ -105,14 +133,25 @@ export class ModelRegistry {
       return entry.apiKey;
     }
     if (entry.envKeyVar) {
-      const v = this.env[entry.envKeyVar];
+      const v = this.lookupCredential(entry.envKeyVar);
       if (v) return v;
       if (entry.envKeyVarFallback) {
-        const v2 = this.env[entry.envKeyVarFallback];
+        const v2 = this.lookupCredential(entry.envKeyVarFallback);
         if (v2) return v2;
       }
     }
     return null;
+  }
+
+  // Two-tier lookup: process.env first (allows opts.env test seam
+  // and explicit shell exports to override), then the credential
+  // resolver (dotenv search path). Returns "" when nothing matches
+  // so calling code can keep its existing falsy-check shape.
+  private lookupCredential(key: string): string {
+    const fromEnv = this.env[key];
+    if (fromEnv) return fromEnv;
+    const fromResolver = this.resolveCredentialImpl(key);
+    return fromResolver ?? "";
   }
 
   resolveBaseUrl(name: string): string | null {
