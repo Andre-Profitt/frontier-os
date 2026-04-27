@@ -34,6 +34,7 @@ const builderRunSchema = load("builder-run.schema.json");
 const reviewPacketSchema = load("review-packet.schema.json");
 const builderSwarmPacketSchema = load("builder-swarm-packet.schema.json");
 const arbiterDecisionSchema = load("arbiter-decision.schema.json");
+const orchestrationPacketSchema = load("orchestration-packet.schema.json");
 
 export const validateAdapterManifest: ValidateFunction = ajv.compile(
   adapterManifestSchema,
@@ -66,6 +67,9 @@ export const validateBuilderSwarmPacket: ValidateFunction = ajv.compile(
 );
 export const validateArbiterDecision: ValidateFunction = ajv.compile(
   arbiterDecisionSchema,
+);
+export const validateOrchestrationPacket: ValidateFunction = ajv.compile(
+  orchestrationPacketSchema,
 );
 
 // ---- TypeScript mirrors of the JSON schemas (kept in sync manually) ----

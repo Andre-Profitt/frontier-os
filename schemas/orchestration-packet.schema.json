@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/orchestration-packet.schema.json",
+  "title": "FrontierOS Orchestration Packet",
+  "description": "Top-level record of one frontier-os orchestrate run. Captures the input, the produced sub-packets (builder swarm + per-candidate review packets + arbiter decision), the artifact paths, and the operator-facing exit summary. Persisted at artifacts/orchestrations/<taskId>/orchestration-packet.json. Designed so PR Q1 (quality ledger) can ingest one of these and write the per-event ledger rows.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packetId",
+    "taskId",
+    "scannedAt",
+    "input",
+    "builderPacketPath",
+    "reviewPacketPaths",
+    "arbiterDecisionPath",
+    "finalReportPath",
+    "artifactsDir",
+    "exitCode",
+    "elapsedMs"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "packetId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "scannedAt": { "type": "string", "format": "date-time" },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskDescription", "builderCount", "reviewerCount"],
+      "properties": {
+        "taskDescription": { "type": "string" },
+        "touchList": { "type": "array", "items": { "type": "string" } },
+        "allowUnscopedDiff": { "type": "boolean" },
+        "baseBranch": { "type": "string" },
+        "builderCount": { "type": "integer", "minimum": 1 },
+        "reviewerCount": { "type": "integer", "minimum": 1 },
+        "builderTaskClass": { "type": "string" },
+        "reviewerTaskClass": { "type": "string" },
+        "builderModelKeys": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rubricPath": { "type": "string" },
+        "qualityFloor": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minRubricCoverage": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minReviewCoverage": { "type": "number", "minimum": 0, "maximum": 1 },
+        "requireTests": { "type": "boolean" },
+        "antiExamplePaths": { "type": "array", "items": { "type": "string" } },
+        "contextPackLane": { "type": "string" },
+        "cleanup": { "type": "boolean" }
+      }
+    },
+    "contextPackPath": {
+      "type": "string",
+      "description": "Path to the context pack markdown if --lane was provided. Absent when no context pack was generated."
+    },
+    "builderPacketPath": { "type": "string", "minLength": 1 },
+    "reviewPacketPaths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["builderId", "path"],
+        "properties": {
+          "builderId": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      },
+      "description": "One review packet per collected candidate. Empty when builder swarm produced zero collected candidates."
+    },
+    "arbiterDecisionPath": { "type": "string", "minLength": 1 },
+    "finalReportPath": { "type": "string", "minLength": 1 },
+    "artifactsDir": { "type": "string", "minLength": 1 },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "buildersSpawned",
+        "buildersCollected",
+        "reviewSwarmsRun",
+        "arbiterDecision"
+      ],
+      "properties": {
+        "buildersSpawned": { "type": "integer", "minimum": 0 },
+        "buildersCollected": { "type": "integer", "minimum": 0 },
+        "reviewSwarmsRun": { "type": "integer", "minimum": 0 },
+        "arbiterDecision": {
+          "enum": ["accept", "combine", "reject", "escalate_to_human"]
+        },
+        "selectedBuilderId": { "type": "string" },
+        "modelsUsed": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "exitCode": {
+      "type": "integer",
+      "enum": [0, 1, 2],
+      "description": "0 = accept; 1 = reject; 2 = escalate_to_human. Matches the arbiter CLI's exit codes."
+    },
+    "elapsedMs": { "type": "integer", "minimum": 0 }
+  }
+}
