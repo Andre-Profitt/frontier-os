@@ -487,28 +487,43 @@ test("listProviders: returns enabled providers from registry", async () => {
 
 // --- live model-policy.json sanity (no network) --------------------------
 
-test("real config/model-policy.json parses; nim disabled by default", () => {
+test("real config/model-policy.json parses; nim enabled but needs auth (Patch N)", () => {
+  // Test seam: env={} closes the env AND defaults the credential resolver
+  // to no-op so we don't leak ~/.env from the dev machine.
   const registry = new ModelRegistry({ env: {} });
   const nim = registry.providerEntry("nvidia-nim");
   assert.ok(nim);
-  assert.equal(nim?.enabled, false);
+  assert.equal(nim?.enabled, true); // Patch N flipped this on
   // Local providers are listed.
   assert.ok(registry.providerEntry("ollama-local"));
   assert.ok(registry.providerEntry("lmstudio-local"));
-  // Effective enablement: nim is disabled (no env key), ollama-local is enabled.
+  // Effective enablement: nim is policy-enabled BUT the test env has
+  // no NVIDIA_API_KEY → not effective. ollama-local needs no auth.
   const enabled = new Set(registry.listEnabledProviders());
   assert.equal(enabled.has("nvidia-nim"), false);
   assert.equal(enabled.has("ollama-local"), true);
 });
 
-test("real config/model-policy.json: NVIDIA_API_KEY env makes nim effectively enabled (after policy flip)", () => {
-  // Even with the env, the policy itself disables nim. Assert that the
-  // registry surfaces the env-driven key resolution but respects the
-  // policy gate.
+test("real config/model-policy.json: NVIDIA_API_KEY env makes nim effectively enabled (Patch N)", () => {
+  // env-injected key satisfies the auth check; policy is enabled.
   const registry = new ModelRegistry({
     env: { NVIDIA_API_KEY: "x" },
   });
   const enabled = new Set(registry.listEnabledProviders());
-  // Policy says enabled: false → still not effective even with env set.
-  assert.equal(enabled.has("nvidia-nim"), false);
+  assert.equal(enabled.has("nvidia-nim"), true);
+});
+
+test("real config/model-policy.json: dotenv-resolved key satisfies nim auth (Patch N resolver)", () => {
+  // Test seam: env={} closes process.env; resolveCredentialImpl provides
+  // the key as if it came from ~/.env. Pins the credential-resolver
+  // wiring so a future regression where the registry stops calling the
+  // resolver gets caught.
+  const registry = new ModelRegistry({
+    env: {},
+    resolveCredentialImpl: (key) =>
+      key === "NVIDIA_API_KEY" ? "from-dotenv" : undefined,
+  });
+  const enabled = new Set(registry.listEnabledProviders());
+  assert.equal(enabled.has("nvidia-nim"), true);
+  assert.equal(registry.resolveApiKey("nvidia-nim"), "from-dotenv");
 });
