@@ -44,6 +44,13 @@ export interface WorkerRunEvent extends BaseEvent {
   rubricScore?: number;
   rubricCoverage?: number;
   verificationPhase?: string;
+  // Patch Y populates this on candidates that took the S/R apply path:
+  // 1 = first-shot success, 2 = succeeded after one structured-feedback
+  // retry, 0 (or undefined) = no S/R path taken (unified-diff or pre-Y).
+  // Surfaced into the ledger so a downstream query can compute the
+  // retry's actual yield: P(applied | applyAttempts=2 vs =1) per model
+  // / class. Without this field the retry's value is unmeasurable.
+  applyAttempts?: number;
   // selected = arbiter chose this candidate
   // not_selected = arbiter evaluated but didn't pick (or escalated)
   // excluded = candidate didn't reach phase=collected, never evaluated

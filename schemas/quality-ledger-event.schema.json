@@ -63,6 +63,7 @@
         "rubricScore": { "type": "number", "minimum": 0, "maximum": 1 },
         "rubricCoverage": { "type": "number", "minimum": 0, "maximum": 1 },
         "verificationPhase": { "type": "string" },
+        "applyAttempts": { "type": "integer", "minimum": 0 },
         "arbiterOutcome": {
           "enum": ["selected", "not_selected", "excluded"]
         },

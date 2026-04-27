@@ -73,6 +73,7 @@ function makeBuilderPacket(opts: {
     phase: string;
     ok?: boolean;
     withPatch?: boolean;
+    applyAttempts?: number;
   }>;
   taskClass?: string;
 }): BuilderSwarmPacket {
@@ -105,6 +106,9 @@ function makeBuilderPacket(opts: {
               commitCount: 1,
             },
           }
+        : {}),
+      ...(c.applyAttempts !== undefined
+        ? { applyAttempts: c.applyAttempts }
         : {}),
     })),
     elapsedMs: 100,
@@ -497,6 +501,91 @@ test("buildEvents: selectedCandidateVerified=false when no candidate selected", 
     assert.equal(ad.anyCandidateVerified, true);
     assert.equal(ad.selectedCandidateVerified, false);
   }
+});
+
+// --- buildEvents: applyAttempts (Patch Z) -------------------------------
+
+test("buildEvents: applyAttempts surfaces from candidate to worker_run row", () => {
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          applyAttempts: 2, // succeeded after one Patch Y retry
+        },
+        {
+          builderId: "b2",
+          modelKey: "nim:k2",
+          phase: "collected",
+          withPatch: true,
+          applyAttempts: 1, // first-shot success
+        },
+        {
+          builderId: "b3",
+          modelKey: "nim:k3",
+          phase: "apply_failed",
+          applyAttempts: 2, // retried, still failed
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 2,
+    }),
+  });
+  const wrByBuilder = new Map(
+    events
+      .filter((e) => e.kind === "worker_run")
+      .map((e) => [
+        "workerId" in e ? e.workerId : "",
+        "applyAttempts" in e ? e.applyAttempts : undefined,
+      ]),
+  );
+  assert.equal(wrByBuilder.get("b1"), 2);
+  assert.equal(wrByBuilder.get("b2"), 1);
+  assert.equal(wrByBuilder.get("b3"), 2);
+});
+
+test("buildEvents: applyAttempts omitted when candidate took unified-diff path (no field set)", () => {
+  // Pre-Patch-Y candidates and unified-diff-path candidates (Patch Y
+  // explicitly does NOT set applyAttempts on the unified-diff branch)
+  // must not get a phantom integer in the ledger row — undefined stays
+  // undefined so downstream stats can distinguish "S/R retry never
+  // ran" from "S/R first-shot success".
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          // applyAttempts omitted on purpose
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 1,
+    }),
+  });
+  const wr = events.find(
+    (e) => e.kind === "worker_run" && "workerId" in e && e.workerId === "b1",
+  );
+  assert.ok(wr);
+  assert.equal(
+    "applyAttempts" in wr ? wr.applyAttempts : "field-absent",
+    "field-absent",
+  );
 });
 
 // --- ingestOrchestration: dry run + write -------------------------------
