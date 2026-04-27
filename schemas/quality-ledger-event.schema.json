@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/quality-ledger-event.schema.json",
+  "title": "FrontierOS Quality Ledger Event",
+  "description": "One row in any of state/quality-ledger/{model-events,worker-runs,review-findings,arbiter-decisions}.jsonl. Discriminated by `kind`. Designed so the model-router can answer 'which model is good at which role' from durable evidence rather than vibes. Written by `frontier quality ledger ingest <orchestration-packet.json>` after each frontier orchestrate run.",
+  "type": "object",
+  "unevaluatedProperties": false,
+  "required": ["eventId", "taskId", "packetId", "ts", "kind"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "packetId": { "type": "string", "minLength": 1 },
+    "ts": { "type": "string", "format": "date-time" },
+    "kind": {
+      "enum": [
+        "worker_run",
+        "review_finding",
+        "arbiter_decision",
+        "model_event"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "workerId",
+        "role",
+        "taskClass",
+        "phase",
+        "ok",
+        "arbiterOutcome"
+      ],
+      "properties": {
+        "kind": { "const": "worker_run" },
+        "workerId": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["builder"] },
+        "modelKey": { "type": "string" },
+        "taskClass": { "type": "string", "minLength": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "ok": { "type": "boolean" },
+        "patch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sizeBytes",
+            "addedLines",
+            "deletedLines",
+            "commitCount",
+            "files"
+          ],
+          "properties": {
+            "sizeBytes": { "type": "integer", "minimum": 0 },
+            "addedLines": { "type": "integer", "minimum": 0 },
+            "deletedLines": { "type": "integer", "minimum": 0 },
+            "commitCount": { "type": "integer", "minimum": 0 },
+            "files": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "rubricScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rubricCoverage": { "type": "number", "minimum": 0, "maximum": 1 },
+        "verificationPhase": { "type": "string" },
+        "arbiterOutcome": {
+          "enum": ["selected", "not_selected", "excluded"]
+        },
+        "reviewFindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "high": { "type": "integer", "minimum": 0 },
+            "medium": { "type": "integer", "minimum": 0 },
+            "low": { "type": "integer", "minimum": 0 },
+            "bug": { "type": "integer", "minimum": 0 },
+            "contract_violation": { "type": "integer", "minimum": 0 },
+            "false_green": { "type": "integer", "minimum": 0 },
+            "risk": { "type": "integer", "minimum": 0 },
+            "style": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "reviewerId",
+        "reviewerRole",
+        "taskClass",
+        "category",
+        "severity",
+        "claim",
+        "reviewedBuilderId"
+      ],
+      "properties": {
+        "kind": { "const": "review_finding" },
+        "reviewerId": { "type": "string", "minLength": 1 },
+        "modelKey": { "type": "string" },
+        "reviewerRole": { "enum": ["reviewer"] },
+        "taskClass": { "type": "string", "minLength": 1 },
+        "category": {
+          "enum": ["bug", "contract_violation", "false_green", "risk", "style"]
+        },
+        "severity": { "enum": ["high", "medium", "low"] },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 0 },
+        "claim": { "type": "string", "minLength": 1 },
+        "reviewedBuilderId": { "type": "string", "minLength": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "decision",
+        "candidatesEvaluated",
+        "rerunVerificationOk"
+      ],
+      "properties": {
+        "kind": { "const": "arbiter_decision" },
+        "decision": {
+          "enum": ["accept", "combine", "reject", "escalate_to_human"]
+        },
+        "selectedBuilderId": { "type": "string" },
+        "qualityFloor": { "type": "number", "minimum": 0, "maximum": 1 },
+        "candidatesEvaluated": { "type": "integer", "minimum": 0 },
+        "rerunVerificationOk": { "type": "boolean" }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "modelKey",
+        "role",
+        "taskClass",
+        "callsTotal",
+        "callsOk",
+        "callsFailed"
+      ],
+      "properties": {
+        "kind": { "const": "model_event" },
+        "modelKey": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["builder", "reviewer"] },
+        "taskClass": { "type": "string", "minLength": 1 },
+        "callsTotal": { "type": "integer", "minimum": 0 },
+        "callsOk": { "type": "integer", "minimum": 0 },
+        "callsFailed": { "type": "integer", "minimum": 0 },
+        "arbiterSelectedCount": { "type": "integer", "minimum": 0 }
+      }
+    }
+  ]
+}
