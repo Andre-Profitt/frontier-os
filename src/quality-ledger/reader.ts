@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 
 import type {
   ArbiterDecisionEvent,
+  HumanDecisionEvent,
   ModelEvent,
   QualityLedgerEvent,
   ReviewFindingEvent,
@@ -31,6 +32,7 @@ export interface LedgerSnapshot {
   reviewFindings: ReviewFindingEvent[];
   arbiterDecisions: ArbiterDecisionEvent[];
   modelEvents: ModelEvent[];
+  humanDecisions: HumanDecisionEvent[];
 }
 
 export function readLedger(opts: ReadOptions = {}): LedgerSnapshot {
@@ -54,6 +56,11 @@ export function readLedger(opts: ReadOptions = {}): LedgerSnapshot {
     modelEvents: readKind<ModelEvent>(
       resolve(dir, "model-events.jsonl"),
       "model_event",
+      opts.onMalformed,
+    ),
+    humanDecisions: readKind<HumanDecisionEvent>(
+      resolve(dir, "human-decisions.jsonl"),
+      "human_decision",
       opts.onMalformed,
     ),
   };

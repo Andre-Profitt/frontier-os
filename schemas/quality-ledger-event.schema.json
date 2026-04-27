@@ -17,7 +17,8 @@
         "worker_run",
         "review_finding",
         "arbiter_decision",
-        "model_event"
+        "model_event",
+        "human_decision"
       ]
     }
   },
@@ -148,6 +149,29 @@
         "callsOk": { "type": "integer", "minimum": 0 },
         "callsFailed": { "type": "integer", "minimum": 0 },
         "arbiterSelectedCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["kind", "decision", "reason"],
+      "properties": {
+        "kind": { "const": "human_decision" },
+        "decision": {
+          "enum": ["accepted", "rejected", "escalation_resolved", "deferred"]
+        },
+        "acceptedBuilderId": {
+          "type": "string",
+          "description": "Required when decision=accepted. The builder whose patch the human applied."
+        },
+        "arbiterAgreed": {
+          "type": "boolean",
+          "description": "True iff acceptedBuilderId matches the arbiter's recommended selectedBuilderId for this packet. Computed by the writer at mark time when both are known."
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "decidedBy": {
+          "type": "string",
+          "description": "Optional human identifier (operator name, user@host)."
+        }
       }
     }
   ]
