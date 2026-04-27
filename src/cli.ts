@@ -3929,6 +3929,63 @@ async function cmdQualityModelScore(
   out({ scores }, pretty);
 }
 
+// Q3: human-readable model scorecard. `quality scorecard --format json`
+// is identical output to `quality model-score`; `--format table` (default)
+// renders aligned columns for terminal consumption.
+async function cmdQualityScorecard(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const ledgerDir =
+    typeof args.flags["ledger-dir"] === "string"
+      ? args.flags["ledger-dir"]
+      : undefined;
+  const role =
+    typeof args.flags.role === "string"
+      ? (args.flags.role as "builder" | "reviewer")
+      : undefined;
+  const taskClass =
+    typeof args.flags["task-class"] === "string"
+      ? args.flags["task-class"]
+      : undefined;
+  const format =
+    typeof args.flags.format === "string" ? args.flags.format : "table";
+  if (role && role !== "builder" && role !== "reviewer") {
+    err({
+      error: `--role must be 'builder' or 'reviewer'; got "${role}"`,
+    });
+    return;
+  }
+  if (format !== "table" && format !== "json") {
+    err({
+      error: `--format must be 'table' or 'json'; got "${format}"`,
+    });
+    return;
+  }
+  const { computeModelScores } =
+    await import("./quality-ledger/model-score.ts");
+  const scores = computeModelScores({
+    ...(ledgerDir ? { ledgerDir } : {}),
+    ...(role ? { role } : {}),
+    ...(taskClass ? { taskClass } : {}),
+  });
+  if (format === "json") {
+    out({ scores }, pretty);
+    return;
+  }
+  const { formatScorecardTable } =
+    await import("./quality-ledger/scorecard-format.ts");
+  // Print directly to stdout — table output is for humans, not for the
+  // structured-out() path which would JSON-wrap it.
+  // includeEmptyRoles=true on the CLI path so an operator with an empty
+  // ledger sees "BUILDERS\n  (none)" rather than blank stdout (which
+  // reads as silent failure). The pure formatter still defaults to
+  // empty-string for programmatic callers.
+  process.stdout.write(
+    formatScorecardTable(scores, { includeEmptyRoles: true }) + "\n",
+  );
+}
+
 // ---- orchestrate family (PR R6: the loop) ----
 
 async function cmdOrchestrate(
@@ -5091,10 +5148,18 @@ async function main(): Promise<void> {
         return cmdQualityModelScore(args, pretty);
       case "mark":
         return cmdQualityMark(args, pretty);
+      case "scorecard":
+        return cmdQualityScorecard(args, pretty);
       default:
         return err({
           error: `unknown quality subcommand: ${args.subcommand ?? "(none)"}`,
-          expected: ["ledger ingest", "ledger show", "model-score", "mark"],
+          expected: [
+            "ledger ingest",
+            "ledger show",
+            "model-score",
+            "mark",
+            "scorecard",
+          ],
         });
     }
   }
