@@ -3727,6 +3727,112 @@ async function cmdGhostQueue(args: ParsedArgs, pretty: boolean): Promise<void> {
   out({ queued: graphPath, destination: dest }, pretty);
 }
 
+// ---- orchestrate family (PR R6: the loop) ----
+
+async function cmdOrchestrate(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const taskId =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const description =
+    typeof args.flags.description === "string"
+      ? args.flags.description
+      : undefined;
+  if (!taskId || !description) {
+    err({
+      error:
+        "orchestrate requires --task <id> --description <text> --rubric <path> [--touch a,b] [--builders 3] [--reviewers 3] [--allow-unscoped-diff] [--quality-floor 0.7] [--min-rubric-coverage 0.5] [--min-review-coverage 0.66] [--require-tests] [--anti-examples a,b] [--lane <ctx-lane>] [--cleanup] [--models nim:k1,nim:k2] [--base-branch X]",
+    });
+    return;
+  }
+  const rubricPath =
+    typeof args.flags.rubric === "string"
+      ? args.flags.rubric
+      : "taste/rubrics/factory_run_rubric.json";
+  const builderCount =
+    typeof args.flags.builders === "string"
+      ? parseInt(args.flags.builders, 10)
+      : 3;
+  const reviewerCount =
+    typeof args.flags.reviewers === "string"
+      ? parseInt(args.flags.reviewers, 10)
+      : 3;
+  const touchList =
+    typeof args.flags.touch === "string"
+      ? args.flags.touch
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  const allowUnscopedDiff = args.flags["allow-unscoped-diff"] === true;
+  const qualityFloor =
+    typeof args.flags["quality-floor"] === "string"
+      ? parseFloat(args.flags["quality-floor"])
+      : undefined;
+  const minRubricCoverage =
+    typeof args.flags["min-rubric-coverage"] === "string"
+      ? parseFloat(args.flags["min-rubric-coverage"])
+      : undefined;
+  const minReviewCoverage =
+    typeof args.flags["min-review-coverage"] === "string"
+      ? parseFloat(args.flags["min-review-coverage"])
+      : undefined;
+  const requireTests = args.flags["require-tests"] === true;
+  const antiExamplePaths =
+    typeof args.flags["anti-examples"] === "string"
+      ? args.flags["anti-examples"]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  const contextPackLane =
+    typeof args.flags.lane === "string" ? args.flags.lane : undefined;
+  const cleanup = args.flags.cleanup === true;
+  const modelKeys =
+    typeof args.flags.models === "string"
+      ? args.flags.models
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined;
+  const baseBranch =
+    typeof args.flags["base-branch"] === "string"
+      ? args.flags["base-branch"]
+      : undefined;
+
+  const { runOrchestration } = await import("./orchestrate/orchestrator.ts");
+  const { InferenceBroker } = await import("./inference/broker.ts");
+  const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+
+  const broker = new InferenceBroker();
+  const worktreeManager = new WorktreeManager();
+
+  const packet = await runOrchestration(
+    { broker, worktreeManager },
+    {
+      taskId,
+      taskDescription: description,
+      ...(touchList.length > 0 ? { touchList } : {}),
+      ...(allowUnscopedDiff ? { allowUnscopedDiff } : {}),
+      ...(baseBranch ? { baseBranch } : {}),
+      builderCount,
+      reviewerCount,
+      ...(modelKeys ? { builderModelKeys: modelKeys } : {}),
+      rubricPath,
+      ...(qualityFloor !== undefined ? { qualityFloor } : {}),
+      ...(minRubricCoverage !== undefined ? { minRubricCoverage } : {}),
+      ...(minReviewCoverage !== undefined ? { minReviewCoverage } : {}),
+      ...(requireTests ? { requireTests } : {}),
+      ...(antiExamplePaths.length > 0 ? { antiExamplePaths } : {}),
+      ...(contextPackLane ? { contextPackLane } : {}),
+      ...(cleanup ? { cleanup } : {}),
+    },
+  );
+  out(packet, pretty);
+  process.exit(packet.exitCode);
+}
+
 // ---- arbiter family (PR R4: merge arbiter) ----
 
 async function cmdArbiterDecide(
@@ -4732,6 +4838,10 @@ async function main(): Promise<void> {
           error: `unknown work subcommand: ${args.subcommand ?? "(none)"}`,
         });
     }
+  }
+
+  if (args.family === "orchestrate") {
+    return cmdOrchestrate(args, pretty);
   }
 
   if (args.family === "arbiter") {
