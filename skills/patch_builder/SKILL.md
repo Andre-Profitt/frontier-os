@@ -68,9 +68,11 @@ Constraints:
 - Do not push.
 - Do not call other model classes.
 
-Search/replace block format (one block per edit; multiple blocks ok):
+Search/replace block format (one block per edit; multiple blocks ok).
+The filename line MUST be one of the EXACT paths from your touch
+list above (NOT a placeholder like "path/to/file.ts"). Schematic:
 
-  path/to/file.ts
+  <touchListPath>
   <<<<<<< SEARCH
   exact text from the file shown above, including leading whitespace
   =======
@@ -84,6 +86,13 @@ Rules for SEARCH text:
 - Preserve all whitespace and indentation exactly.
 - To create a NEW file, leave SEARCH empty and put the full file
   content in REPLACE.
+
+Filename rules:
+- Use the EXACT path from the touch list. No "path/to/" prefix, no
+  worktree-absolute path, no "src/" prefix unless it's already in the
+  touch list entry.
+- Do NOT wrap the path in backticks unless the touch-list entry
+  itself has backticks (it doesn't).
 
 Deliverable:
 1. One or more search/replace blocks (preferred) OR a unified diff

@@ -46,15 +46,19 @@ export interface ProviderConfig {
   requestTimeoutMs?: number;
 }
 
-// Default per-call timeout. 180s accommodates local 70B-class models on
-// consumer hardware (qwen2.5:72b on an M-series Mac runs ~30–120s for
-// builder-sized prompts including rubric + scope rules + diff context).
-// 30s was the original NIM-targeted value; killed local inference
-// mid-flight before the model finished generating. The broker's policy
-// has its own `defaults.requestTimeoutMs` field but does NOT currently
-// wire it through to providers — fixing that threading is a tracked
-// follow-up; this default makes the cluster usable until then.
-const DEFAULT_TIMEOUT_MS = 180_000;
+// Default per-call timeout. 300s covers both branches:
+//   - local 70B-class on consumer hardware (qwen2.5:72b on M-series
+//     Mac runs ~30–120s for builder-sized prompts)
+//   - NIM frontier models (qwen3-coder-480b, kimi-k2.5, deepseek-v4)
+//     have meaningful cold-start + queue + generation latency on the
+//     free tier — Patch N validation showed 264s elapsed on a single
+//     call to qwen2.5-coder-32b-instruct via NIM
+// Was 180s pre-Patch-N (killed long NIM calls mid-flight). The
+// broker's policy has its own `defaults.requestTimeoutMs` field but
+// does NOT currently wire it through to providers; fixing that
+// threading is a tracked follow-up. This default makes the cluster
+// usable until then.
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 export class OpenAICompatibleProvider {
   readonly name: string;
