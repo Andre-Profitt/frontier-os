@@ -50,7 +50,13 @@
         },
         { "provider": "nvidia-nim", "model": "deepseek-ai/deepseek-v4-pro" }
       ],
-      "maxParallel": 1
+      "maxParallel": 1,
+      "gates": {
+        "qualityFloor": 0.5,
+        "minRubricCoverage": 0.4,
+        "minReviewCoverage": 0.4,
+        "requireTests": false
+      }
     },
     "adversarial_review": {
       "summary": "Attack a candidate patch. Diversity matters more than raw quality — different model families surface different bug classes. Patch N adds NIM Kimi-thinking + GLM for diversity beyond the local Qwen+DeepSeek pair.",

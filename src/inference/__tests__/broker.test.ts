@@ -527,3 +527,30 @@ test("real config/model-policy.json: dotenv-resolved key satisfies nim auth (Pat
   assert.equal(enabled.has("nvidia-nim"), true);
   assert.equal(registry.resolveApiKey("nvidia-nim"), "from-dotenv");
 });
+
+// Patch O — per-class arbiter gate defaults.
+
+test("ModelRegistry.classGates: returns the policy class's gates field", () => {
+  const registry = new ModelRegistry({ env: {} });
+  const gates = registry.classGates("patch_builder");
+  // patch_builder has Patch O calibrated gates set.
+  assert.ok(gates);
+  assert.equal(typeof gates?.qualityFloor, "number");
+  assert.ok(
+    (gates?.qualityFloor ?? 0) > 0 && (gates?.qualityFloor ?? 1) < 1,
+    "qualityFloor must be in (0, 1)",
+  );
+});
+
+test("ModelRegistry.classGates: returns undefined for class without gates", () => {
+  const registry = new ModelRegistry({ env: {} });
+  // research_extraction has no gates field set in the live policy.
+  const gates = registry.classGates("research_extraction");
+  assert.equal(gates, undefined);
+});
+
+test("ModelRegistry.classGates: returns undefined for unknown taskClass", () => {
+  const registry = new ModelRegistry({ env: {} });
+  const gates = registry.classGates("does-not-exist");
+  assert.equal(gates, undefined);
+});

@@ -26,6 +26,7 @@ import { dirname } from "node:path";
 
 import type { InferenceBroker } from "../inference/broker.ts";
 import type { WorktreeManager } from "../builders/worktree-manager.ts";
+import { ModelRegistry, type ClassGates } from "../inference/model-registry.ts";
 import {
   runBuilderSwarm,
   type BuilderSwarmPacket,
@@ -63,6 +64,11 @@ export interface OrchestrationDeps {
   // Optional context-pack invoker. Receives the lane name; returns the
   // markdown to write. When undefined, context-pack is skipped.
   contextPackImpl?: (lane: string) => Promise<string> | string;
+  // Patch O test seam: override the per-class gate lookup. Returns the
+  // policy class's `gates` field (or undefined if no class entry / no
+  // gates set). Production default is loadClassGates which reads
+  // config/model-policy.json fresh each call.
+  classGatesImpl?: (taskClass: string) => ClassGates | undefined;
   now?: () => number;
   // Override the artifacts root (default: <repo>/artifacts/orchestrations).
   artifactsRoot?: string;
@@ -91,6 +97,24 @@ export async function runOrchestration(
   const builderTaskClass = input.builderTaskClass ?? DEFAULT_BUILDER_TASK_CLASS;
   const reviewerTaskClass =
     input.reviewerTaskClass ?? DEFAULT_REVIEWER_TASK_CLASS;
+
+  // Patch O: resolve gate defaults from the policy's class entry when
+  // the operator hasn't passed an explicit CLI flag. Resolution order:
+  //   1. CLI flag (input.qualityFloor / input.minRubricCoverage / etc.)
+  //   2. Policy class gates (config/model-policy.json classes[X].gates)
+  //   3. Arbiter built-in defaults (decide() applies these if neither
+  //      above is provided)
+  // The arbiter receives the merged values; it can't tell which layer
+  // they came from. Operator override always wins, no surprises.
+  const classGates =
+    deps.classGatesImpl?.(builderTaskClass) ??
+    (await loadClassGates(builderTaskClass));
+  const effectiveQualityFloor = input.qualityFloor ?? classGates?.qualityFloor;
+  const effectiveMinRubricCoverage =
+    input.minRubricCoverage ?? classGates?.minRubricCoverage;
+  const effectiveMinReviewCoverage =
+    input.minReviewCoverage ?? classGates?.minReviewCoverage;
+  const effectiveRequireTests = input.requireTests ?? classGates?.requireTests;
   const artifactsRoot =
     deps.artifactsRoot ??
     resolve(REPO_ROOT_DEFAULT, "artifacts", "orchestrations");
@@ -220,17 +244,17 @@ export async function runOrchestration(
     candidates: arbiterCandidates,
     reviewerFindings,
     rubricPath: input.rubricPath,
-    ...(input.qualityFloor !== undefined
-      ? { qualityFloor: input.qualityFloor }
+    ...(effectiveQualityFloor !== undefined
+      ? { qualityFloor: effectiveQualityFloor }
       : {}),
-    ...(input.minRubricCoverage !== undefined
-      ? { minRubricCoverage: input.minRubricCoverage }
+    ...(effectiveMinRubricCoverage !== undefined
+      ? { minRubricCoverage: effectiveMinRubricCoverage }
       : {}),
-    ...(input.minReviewCoverage !== undefined
-      ? { minReviewCoverage: input.minReviewCoverage }
+    ...(effectiveMinReviewCoverage !== undefined
+      ? { minReviewCoverage: effectiveMinReviewCoverage }
       : {}),
-    ...(input.requireTests !== undefined
-      ? { requireTests: input.requireTests }
+    ...(effectiveRequireTests !== undefined
+      ? { requireTests: effectiveRequireTests }
       : {}),
     ...(input.antiExamplePaths !== undefined
       ? { antiExamplePaths: input.antiExamplePaths }
@@ -397,4 +421,22 @@ function newPacketId(taskId: string, nowMs: number): string {
   const ts = Math.floor(nowMs / 1000).toString(36);
   const rand = Math.random().toString(36).slice(2, 8);
   return `orch-${taskId}-${ts}-${rand}`;
+}
+
+// Patch O: load per-class gate defaults from the policy. Returns the
+// class's `gates` object or undefined if (a) no class entry, (b) no
+// gates set on the class, or (c) the policy file is unreadable. Errors
+// are intentionally swallowed — gate defaults are a soft-fail concern
+// (the arbiter has its own internal defaults). The orchestrator just
+// doesn't get to use the policy's class-level overrides on a broken
+// policy file; the run still proceeds.
+async function loadClassGates(
+  taskClass: string,
+): Promise<ClassGates | undefined> {
+  try {
+    const registry = new ModelRegistry();
+    return registry.classGates(taskClass);
+  } catch {
+    return undefined;
+  }
 }
