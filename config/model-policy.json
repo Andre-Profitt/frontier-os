@@ -34,16 +34,12 @@
       "maxParallel": 4
     },
     "patch_builder": {
-      "summary": "Generate code patches in isolated worktrees. Patch N (2026-04-27): NIM enabled, hybrid local+NIM. Local first for offline / daily, NIM frontier coder when it fits the prompt. Order: smaller-fast → bigger-accurate. qwen2.5-coder:14b validated as local primary (selectionRate 2/3 in Patch M comparison batch). qwen2.5:72b is the local diversity alt (1/16, but the wins are real). NIM coder models are unproven on this loop — bake at low volume to compare Wilson lower bounds vs. local before promoting.",
+      "summary": "Generate code patches in isolated worktrees. Patch N (2026-04-27): NIM enabled, hybrid local+NIM. Local first for offline / daily, NIM frontier coder when it fits the prompt. Order: smaller-fast → bigger-accurate. qwen2.5-coder:14b validated as local primary (selectionRate 2/3 in Patch M comparison batch). qwen2.5:72b is the local diversity alt (1/16, but the wins are real). Patch N.2: dropped qwen/qwen2.5-coder-32b-instruct from NIM — endpoint hangs >200s on a 5-token completion (verified 2026-04-27 with direct curl); other NIM models (llama-3.3-70b, kimi-k2, deepseek-v4-flash, qwen3-coder-480b) all respond in <2s.",
       "models": [
         { "provider": "ollama-local", "model": "qwen2.5-coder:14b" },
         { "provider": "ollama-local", "model": "qwen2.5:72b" },
         { "provider": "ollama-local", "model": "aegis-main:latest" },
         { "provider": "ollama-local", "model": "dolphin-llama3:70b" },
-        {
-          "provider": "nvidia-nim",
-          "model": "qwen/qwen2.5-coder-32b-instruct"
-        },
         {
           "provider": "nvidia-nim",
           "model": "qwen/qwen3-coder-480b-a35b-instruct"
