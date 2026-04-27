@@ -1,0 +1,37 @@
+{
+  "$schema": "../../schemas/skill.schema.json",
+  "skillId": "adversarial_review",
+  "version": "v1",
+  "taskClass": "adversarial_review",
+  "summary": "Attack a candidate patch. Find the failure modes before the arbiter does. Diversity across reviewers matters more than depth from a single one — many cheap adversaries beat one expensive one.",
+  "allowedRoles": ["reviewer"],
+  "allowedTools": [
+    "read.file",
+    "read.repo",
+    "read.ledger",
+    "read.mcp.frontier",
+    "write.worktree",
+    "exec.test",
+    "exec.typecheck",
+    "exec.git.status"
+  ],
+  "forbiddenTools": [
+    "exec.git.commit",
+    "exec.git.push",
+    "exec.shell.write",
+    "launchd.apply",
+    "adapter.salesforce.apply",
+    "broker.call"
+  ],
+  "maxParallel": 6,
+  "sideEffects": ["local_write"],
+  "verifierMode": "none",
+  "qualityFloor": 0.7,
+  "promptTemplate": "SKILL.md",
+  "rubric": "taste/rubrics/handoff_rubric.json",
+  "antiExamples": [
+    "taste/anti_examples/false_green_repair.md",
+    "taste/anti_examples/wrong_repo_hallucination.md",
+    "taste/anti_examples/narrow_alert_filter.md"
+  ]
+}

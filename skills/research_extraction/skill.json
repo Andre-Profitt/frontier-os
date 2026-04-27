@@ -1,0 +1,28 @@
+{
+  "$schema": "../../schemas/skill.schema.json",
+  "skillId": "research_extraction",
+  "version": "v1",
+  "taskClass": "research_extraction",
+  "summary": "Read external sources (changelogs, docs, transcripts, releases) and produce a claim ledger with citations. No conclusions, no recommendations — extract what the source said and where it said it.",
+  "allowedRoles": ["researcher"],
+  "allowedTools": [
+    "read.file",
+    "read.repo",
+    "read.web",
+    "read.mcp.frontier",
+    "write.worktree"
+  ],
+  "forbiddenTools": [
+    "exec.git.commit",
+    "exec.git.push",
+    "exec.shell.write",
+    "launchd.apply",
+    "adapter.salesforce.apply",
+    "broker.call"
+  ],
+  "maxParallel": 5,
+  "sideEffects": ["local_write"],
+  "verifierMode": "none",
+  "qualityFloor": 0.7,
+  "promptTemplate": "SKILL.md"
+}

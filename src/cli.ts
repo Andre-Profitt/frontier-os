@@ -2791,6 +2791,265 @@ async function cmdSalesforceAuditBatch(
   }
 }
 
+// ---- model family (PR A: inference broker) ----
+
+async function cmdModelList(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const { ModelRegistry } = await import("./inference/model-registry.ts");
+  const registry = new ModelRegistry();
+  const summary = {
+    providers: registry.listProviderNames().map((name) => {
+      const entry = registry.providerEntry(name)!;
+      return {
+        name,
+        enabled: entry.enabled,
+        effectivelyEnabled: registry.providerEffectivelyEnabled(entry),
+        defaultRpm: entry.defaultRpm,
+        defaultMaxParallel: entry.defaultMaxParallel,
+        baseUrl: registry.resolveBaseUrl(name),
+        hasApiKey: registry.resolveApiKey(name) !== null,
+      };
+    }),
+    classes: Object.entries(registry.policy.classes).map(
+      ([name, classEntry]) => ({
+        name,
+        summary: classEntry.summary,
+        maxParallel: classEntry.maxParallel,
+        models: classEntry.models,
+        effectiveModels: registry.resolveClassModels(name),
+      }),
+    ),
+  };
+  void args;
+  out(summary, pretty);
+}
+
+async function cmdModelProbe(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const provider =
+    typeof args.flags.provider === "string"
+      ? args.flags.provider
+      : (args.positional[0] ?? "");
+  if (!provider) {
+    err({
+      error: "model probe requires <provider> (e.g. nvidia-nim, ollama-local)",
+    });
+    return;
+  }
+  const { ModelRegistry } = await import("./inference/model-registry.ts");
+  const registry = new ModelRegistry();
+  const entry = registry.providerEntry(provider);
+  if (!entry) {
+    err({
+      error: `unknown provider: ${provider}`,
+      expected: registry.listProviderNames(),
+    });
+    return;
+  }
+  if (!registry.providerEffectivelyEnabled(entry)) {
+    err({
+      error: `provider ${provider} not effectively enabled`,
+      detail:
+        entry.enabled === false
+          ? "policy says enabled: false (edit config/model-policy.json)"
+          : `auth env vars missing: ${[entry.envKeyVar, entry.envKeyVarFallback].filter(Boolean).join(" or ")}`,
+    });
+    return;
+  }
+
+  // Live probe: list models + measure latency on /v1/models.
+  const baseUrl = registry.resolveBaseUrl(provider);
+  if (!baseUrl) {
+    err({ error: `provider ${provider} has no baseUrl resolved` });
+    return;
+  }
+  const apiKey = registry.resolveApiKey(provider);
+  const { OpenAICompatibleProvider } =
+    await import("./inference/providers/openai-compatible.ts");
+  const config: { baseUrl: string; apiKey?: string } = { baseUrl };
+  if (apiKey) config.apiKey = apiKey;
+  const client = new OpenAICompatibleProvider(provider, config);
+  const t0 = Date.now();
+  const list = await client.listModels();
+  const elapsed = Date.now() - t0;
+  out(
+    {
+      provider,
+      baseUrl,
+      hasApiKey: apiKey !== null,
+      ok: list.ok,
+      status: list.status,
+      modelCount: list.ids.length,
+      modelsHead: list.ids.slice(0, 10),
+      probeDurationMs: elapsed,
+      generatedAt: new Date().toISOString(),
+    },
+    pretty,
+  );
+}
+
+async function cmdModelCapacityScan(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { ModelRegistry } = await import("./inference/model-registry.ts");
+  const {
+    probeModelCapacity,
+    loadCapacityFile,
+    mergeCapacityRecord,
+    saveCapacityFile,
+    DEFAULT_CAPACITY_PATH,
+  } = await import("./inference/capacity-probe.ts");
+  type ModelCapacityRecord = Awaited<ReturnType<typeof probeModelCapacity>>;
+  const { OpenAICompatibleProvider } =
+    await import("./inference/providers/openai-compatible.ts");
+  const { NvidiaNIMProvider } =
+    await import("./inference/providers/nvidia-nim.ts");
+
+  const providerFilter =
+    typeof args.flags.provider === "string" ? args.flags.provider : undefined;
+  const modelFilter =
+    typeof args.flags.model === "string" ? args.flags.model : undefined;
+  const budgetCalls =
+    typeof args.flags["budget-calls"] === "string"
+      ? parseInt(args.flags["budget-calls"], 10)
+      : 100;
+  const latencySamples =
+    typeof args.flags["latency-samples"] === "string"
+      ? parseInt(args.flags["latency-samples"], 10)
+      : 3;
+  const outputPath =
+    typeof args.flags.output === "string"
+      ? args.flags.output
+      : DEFAULT_CAPACITY_PATH;
+  const dryRun = args.flags["dry-run"] === true;
+
+  const registry = new ModelRegistry();
+
+  // Resolve which (provider, model) pairs to scan. Walk every class, dedupe
+  // by modelKey, filter by --provider / --model, drop providers whose env
+  // auth is missing.
+  const seen = new Set<string>();
+  const targets: Array<{ provider: string; model: string }> = [];
+  for (const [, cls] of Object.entries(registry.policy.classes)) {
+    for (const m of cls.models) {
+      if (providerFilter && m.provider !== providerFilter) continue;
+      if (modelFilter && m.model !== modelFilter) continue;
+      const p = registry.providerEntry(m.provider);
+      if (!p || !registry.providerEffectivelyEnabled(p)) continue;
+      const key = `${m.provider}:${m.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ provider: m.provider, model: m.model });
+    }
+  }
+
+  if (targets.length === 0) {
+    err({
+      error: "no scannable (provider, model) pairs",
+      detail:
+        "either no provider in the policy is effectively enabled, or your --provider/--model filters matched nothing",
+      hint: "frontier model list",
+    });
+    return;
+  }
+
+  const records: ModelCapacityRecord[] = [];
+  for (const t of targets) {
+    let provider: InstanceType<typeof OpenAICompatibleProvider>;
+    if (t.provider === "nvidia-nim") {
+      provider = new NvidiaNIMProvider();
+    } else {
+      const baseUrl = registry.resolveBaseUrl(t.provider);
+      if (!baseUrl) {
+        err({ error: `provider ${t.provider} has no baseUrl resolved` });
+        return;
+      }
+      const apiKey = registry.resolveApiKey(t.provider);
+      const config: { baseUrl: string; apiKey?: string } = { baseUrl };
+      if (apiKey) config.apiKey = apiKey;
+      provider = new OpenAICompatibleProvider(t.provider, config);
+    }
+    const record = await probeModelCapacity({
+      provider,
+      model: t.model,
+      budgetCalls,
+      latencySamples,
+      rateLimitTargetFraction: registry.defaults().rateLimitTargetFraction,
+    });
+    records.push(record);
+  }
+
+  if (!dryRun) {
+    let file = loadCapacityFile(outputPath);
+    for (const r of records) {
+      file = mergeCapacityRecord(file, r);
+    }
+    file.scanner = {
+      rateLimitTargetFraction: registry.defaults().rateLimitTargetFraction,
+      budgetCallsPerModel: budgetCalls,
+      latencySamples,
+    };
+    saveCapacityFile(outputPath, file);
+  }
+
+  out(
+    {
+      scannedAt: new Date().toISOString(),
+      outputPath: dryRun ? null : outputPath,
+      dryRun,
+      modelsScanned: records.length,
+      models: records.map((r) => ({
+        modelKey: r.modelKey,
+        available: r.available,
+        latencyP50Ms: r.latency?.p50Ms ?? null,
+        latencyP95Ms: r.latency?.p95Ms ?? null,
+        observedSafeRpm: r.rateLimit?.observedSafeRpm ?? null,
+        recommendedBucketRpm: r.rateLimit?.recommendedBucketRpm ?? null,
+        ceilingFound: r.rateLimit?.ceilingFound ?? null,
+        budgetExhausted: r.rateLimit?.budgetExhausted ?? null,
+        errors: r.errors.length,
+      })),
+    },
+    pretty,
+  );
+}
+
+async function cmdModelCall(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const taskClass =
+    typeof args.flags.class === "string" ? args.flags.class : "";
+  if (!taskClass) {
+    err({ error: "model call requires --class <taskClass>" });
+    return;
+  }
+  const prompt =
+    typeof args.flags.prompt === "string"
+      ? args.flags.prompt
+      : args.positional.join(" ");
+  if (!prompt) {
+    err({ error: "model call requires --prompt <text> (or positional)" });
+    return;
+  }
+  const { InferenceBroker } = await import("./inference/broker.ts");
+  const broker = new InferenceBroker();
+  const callOpts: {
+    taskClass: string;
+    messages: Array<{ role: "user"; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+  } = {
+    taskClass,
+    messages: [{ role: "user", content: prompt }],
+  };
+  if (typeof args.flags.temperature === "string") {
+    callOpts.temperature = parseFloat(args.flags.temperature);
+  }
+  if (typeof args.flags["max-tokens"] === "string") {
+    callOpts.max_tokens = parseInt(args.flags["max-tokens"], 10);
+  }
+  const res = await broker.callClass(callOpts);
+  out(res, pretty);
+  process.exit(res.ok ? 0 : 1);
+}
+
 // ---- context family (Phase 2: lane context pack) ----
 
 async function cmdContextPack(
@@ -3342,6 +3601,187 @@ async function cmdGhostQueue(args: ParsedArgs, pretty: boolean): Promise<void> {
   out({ queued: graphPath, destination: dest }, pretty);
 }
 
+// ---- builder family (PR R2: worktree manager) ----
+
+async function cmdBuilderSpawn(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager, BuilderRunError } =
+    await import("./builders/worktree-manager.ts");
+  const taskId =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const builderId =
+    typeof args.flags.builder === "string" ? args.flags.builder : undefined;
+  const taskClass =
+    typeof args.flags["task-class"] === "string"
+      ? args.flags["task-class"]
+      : undefined;
+  if (!taskId || !builderId || !taskClass) {
+    err({
+      error:
+        "builder spawn requires --task <id> --builder <id> --task-class <class>",
+    });
+    return;
+  }
+  const baseBranch =
+    typeof args.flags["base-branch"] === "string"
+      ? args.flags["base-branch"]
+      : undefined;
+  const modelKey =
+    typeof args.flags.model === "string" ? args.flags.model : undefined;
+
+  const mgr = new WorktreeManager();
+  try {
+    const run = mgr.spawn({
+      taskId,
+      builderId,
+      taskClass,
+      ...(baseBranch ? { baseBranch } : {}),
+      ...(modelKey ? { modelKey } : {}),
+    });
+    out(run, pretty);
+  } catch (e) {
+    if (e instanceof BuilderRunError) {
+      err({ error: e.message, details: e.details });
+      return;
+    }
+    throw e;
+  }
+}
+
+async function cmdBuilderList(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+  const mgr = new WorktreeManager();
+  const all = mgr.list();
+  const taskFilter =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const statusFilter =
+    typeof args.flags.status === "string" ? args.flags.status : undefined;
+  const filtered = all.filter((r) => {
+    if (taskFilter && r.taskId !== taskFilter) return false;
+    if (statusFilter && r.status !== statusFilter) return false;
+    return true;
+  });
+  out(
+    {
+      runs: filtered.map((r) => ({
+        runId: r.runId,
+        taskId: r.taskId,
+        builderId: r.builderId,
+        taskClass: r.taskClass,
+        status: r.status,
+        worktreePath: r.worktreePath,
+        createdAt: r.createdAt,
+        ...(r.modelKey ? { modelKey: r.modelKey } : {}),
+        ...(r.patch
+          ? {
+              patchFiles: r.patch.files.length,
+              patchSizeBytes: r.patch.sizeBytes,
+            }
+          : {}),
+      })),
+    },
+    pretty,
+  );
+}
+
+async function cmdBuilderGet(args: ParsedArgs, pretty: boolean): Promise<void> {
+  const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+  const runId =
+    typeof args.flags["run-id"] === "string"
+      ? args.flags["run-id"]
+      : (args.positional[0] ?? "");
+  if (!runId) {
+    err({ error: "builder get requires --run-id <id> (or positional)" });
+    return;
+  }
+  const mgr = new WorktreeManager();
+  const run = mgr.get(runId);
+  if (!run) {
+    err({ error: `unknown runId: ${runId}` });
+    return;
+  }
+  out(run, pretty);
+}
+
+async function cmdBuilderCollect(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager, BuilderRunError } =
+    await import("./builders/worktree-manager.ts");
+  const runId =
+    typeof args.flags["run-id"] === "string"
+      ? args.flags["run-id"]
+      : (args.positional[0] ?? "");
+  if (!runId) {
+    err({ error: "builder collect requires --run-id <id>" });
+    return;
+  }
+  const mgr = new WorktreeManager();
+  try {
+    const run = mgr.collect(runId);
+    out(
+      {
+        runId: run.runId,
+        status: run.status,
+        collectedAt: run.collectedAt,
+        patch: run.patch
+          ? {
+              files: run.patch.files,
+              sizeBytes: run.patch.sizeBytes,
+              addedLines: run.patch.addedLines,
+              deletedLines: run.patch.deletedLines,
+              commitCount: run.patch.commitCount,
+            }
+          : null,
+      },
+      pretty,
+    );
+  } catch (e) {
+    if (e instanceof BuilderRunError) {
+      err({ error: e.message, details: e.details });
+      return;
+    }
+    throw e;
+  }
+}
+
+async function cmdBuilderRemove(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const { WorktreeManager, BuilderRunError } =
+    await import("./builders/worktree-manager.ts");
+  const runId =
+    typeof args.flags["run-id"] === "string"
+      ? args.flags["run-id"]
+      : (args.positional[0] ?? "");
+  if (!runId) {
+    err({ error: "builder remove requires --run-id <id>" });
+    return;
+  }
+  const force = args.flags.force === true;
+  const mgr = new WorktreeManager();
+  try {
+    const run = mgr.remove(runId, { force });
+    out(
+      { runId: run.runId, status: run.status, cleanedAt: run.cleanedAt },
+      pretty,
+    );
+  } catch (e) {
+    if (e instanceof BuilderRunError) {
+      err({ error: e.message, details: e.details });
+      return;
+    }
+    throw e;
+  }
+}
+
 // ---- work graph family (Phase 6) ----
 
 async function cmdWorkValidate(
@@ -3588,6 +4028,11 @@ async function main(): Promise<void> {
           ],
           context: [
             "pack --lane <lane> [--json] [--pretty] [--no-alerts] [--alert-lookback-days N]",
+          ],
+          model: [
+            "list [--json] [--pretty]                                inventory of providers + classes + effective models",
+            "probe <provider>                                        live /v1/models call against the provider's base URL",
+            "call --class <taskClass> --prompt <text> [--temperature N] [--max-tokens N]   route through the broker",
           ],
         },
         notes: [
@@ -3917,6 +4362,24 @@ async function main(): Promise<void> {
     }
   }
 
+  if (args.family === "model") {
+    switch (args.subcommand) {
+      case "list":
+        return cmdModelList(args, pretty);
+      case "probe":
+        return cmdModelProbe(args, pretty);
+      case "capacity-scan":
+        return cmdModelCapacityScan(args, pretty);
+      case "call":
+        return cmdModelCall(args, pretty);
+      default:
+        return err({
+          error: `unknown model subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["list", "probe", "capacity-scan", "call"],
+        });
+    }
+  }
+
   if (args.family === "context") {
     switch (args.subcommand) {
       case "pack":
@@ -4010,6 +4473,27 @@ async function main(): Promise<void> {
       default:
         return err({
           error: `unknown work subcommand: ${args.subcommand ?? "(none)"}`,
+        });
+    }
+  }
+
+  if (args.family === "builder") {
+    switch (args.subcommand) {
+      case "spawn":
+        return cmdBuilderSpawn(args, pretty);
+      case "list":
+        return cmdBuilderList(args, pretty);
+      case "get":
+        return cmdBuilderGet(args, pretty);
+      case "collect":
+        return cmdBuilderCollect(args, pretty);
+      case "remove":
+      case "clean":
+        return cmdBuilderRemove(args, pretty);
+      default:
+        return err({
+          error: `unknown builder subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["spawn", "list", "get", "collect", "remove", "clean"],
         });
     }
   }

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/builder-run.schema.json",
+  "title": "FrontierOS Builder Run",
+  "description": "State record for one builder run inside an isolated git worktree. Persisted at state/builders/<runId>.json. Updated through spawn() → collect() → clean() lifecycle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "taskId",
+    "builderId",
+    "taskClass",
+    "baseBranch",
+    "baseCommit",
+    "branchName",
+    "worktreePath",
+    "createdAt",
+    "status"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "runId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "builderId": { "type": "string", "minLength": 1 },
+    "taskClass": { "type": "string", "minLength": 1 },
+    "modelKey": { "type": "string" },
+    "baseBranch": { "type": "string", "minLength": 1 },
+    "baseCommit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "branchName": { "type": "string", "minLength": 1 },
+    "worktreePath": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["spawned", "collected", "cleaned", "failed"] },
+    "collectedAt": { "type": "string", "format": "date-time" },
+    "cleanedAt": { "type": "string", "format": "date-time" },
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diff",
+        "files",
+        "sizeBytes",
+        "addedLines",
+        "deletedLines",
+        "commitCount"
+      ],
+      "properties": {
+        "diff": { "type": "string" },
+        "files": { "type": "array", "items": { "type": "string" } },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "addedLines": { "type": "integer", "minimum": 0 },
+        "deletedLines": { "type": "integer", "minimum": 0 },
+        "commitCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "message"],
+      "properties": {
+        "phase": { "enum": ["spawn", "collect", "clean"] },
+        "message": { "type": "string" },
+        "stderr": { "type": "string" }
+      }
+    }
+  }
+}

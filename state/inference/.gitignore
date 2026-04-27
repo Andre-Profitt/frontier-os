@@ -1,0 +1,5 @@
+# Generated runtime state for the inference broker — never committed.
+model-capacity.json
+model-scores.json
+rate-limit-events.jsonl
+buckets.json

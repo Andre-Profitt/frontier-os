@@ -1,0 +1,35 @@
+{
+  "$schema": "../../schemas/skill.schema.json",
+  "skillId": "patch_builder",
+  "version": "v1",
+  "taskClass": "patch_builder",
+  "summary": "Generate a code patch in an isolated git worktree. Multiple builders may run in parallel on the same task; the arbiter picks. Builders never touch main; never commit upstream; never run apply-class adapters.",
+  "allowedRoles": ["builder"],
+  "allowedTools": [
+    "read.file",
+    "read.repo",
+    "read.ledger",
+    "read.mcp.frontier",
+    "write.worktree",
+    "exec.test",
+    "exec.lint",
+    "exec.typecheck",
+    "exec.build",
+    "exec.git.status",
+    "exec.git.commit"
+  ],
+  "forbiddenTools": [
+    "exec.git.push",
+    "exec.shell.write",
+    "launchd.apply",
+    "adapter.salesforce.apply",
+    "adapter.github.apply",
+    "broker.call"
+  ],
+  "maxParallel": 4,
+  "sideEffects": ["local_write"],
+  "verifierMode": "required",
+  "qualityFloor": 0.75,
+  "promptTemplate": "SKILL.md",
+  "rubric": "taste/rubrics/factory_run_rubric.json"
+}

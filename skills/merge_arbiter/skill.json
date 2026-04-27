@@ -1,0 +1,37 @@
+{
+  "$schema": "../../schemas/skill.schema.json",
+  "skillId": "merge_arbiter",
+  "version": "v1",
+  "taskClass": "merge_arbiter",
+  "summary": "Final ship/block decision over a candidate patch with reviewer findings and verification records. Explains its reasoning, ranks candidates, and never auto-merges. Stays on the strongest trusted model — empty model list in policy until one is wired explicitly.",
+  "allowedRoles": ["arbiter"],
+  "allowedTools": [
+    "read.file",
+    "read.repo",
+    "read.ledger",
+    "read.mcp.frontier",
+    "write.worktree",
+    "exec.test",
+    "exec.typecheck",
+    "exec.git.status"
+  ],
+  "forbiddenTools": [
+    "exec.git.commit",
+    "exec.git.push",
+    "exec.shell.write",
+    "launchd.apply",
+    "adapter.salesforce.apply",
+    "adapter.github.apply",
+    "broker.call"
+  ],
+  "maxParallel": 1,
+  "sideEffects": ["local_write"],
+  "verifierMode": "required_before_side_effect",
+  "qualityFloor": 0.85,
+  "promptTemplate": "SKILL.md",
+  "rubric": "taste/rubrics/handoff_rubric.json",
+  "antiExamples": [
+    "taste/anti_examples/false_green_repair.md",
+    "taste/anti_examples/narrow_alert_filter.md"
+  ]
+}
