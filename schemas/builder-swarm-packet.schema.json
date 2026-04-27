@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/builder-swarm-packet.schema.json",
+  "title": "FrontierOS Builder Swarm Packet",
+  "description": "Aggregated output from one builder-swarm run. N parallel builders each work in their own isolated git worktree, call the broker against the patch_builder skill, and propose a unified diff. The packet captures every candidate (success or failure) for downstream arbitration (PR R4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packetId",
+    "scannedAt",
+    "taskId",
+    "taskClass",
+    "builderCount",
+    "candidates",
+    "modelsUsed",
+    "elapsedMs"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "packetId": { "type": "string", "minLength": 1 },
+    "scannedAt": { "type": "string", "format": "date-time" },
+    "taskId": { "type": "string", "minLength": 1 },
+    "taskClass": { "type": "string", "minLength": 1 },
+    "taskDescription": { "type": "string" },
+    "touchList": { "type": "array", "items": { "type": "string" } },
+    "baseBranch": { "type": "string" },
+    "builderCount": { "type": "integer", "minimum": 1 },
+    "modelsUsed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "elapsedMs": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["builderId", "ok", "phase"],
+      "properties": {
+        "builderId": { "type": "string", "minLength": 1 },
+        "modelKey": { "type": "string" },
+        "runId": {
+          "type": "string",
+          "description": "Links to a BuilderRun in state/builders/<runId>.json"
+        },
+        "worktreePath": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "phase": {
+          "enum": [
+            "spawn_failed",
+            "broker_failed",
+            "no_diff_extracted",
+            "scope_rejected",
+            "apply_failed",
+            "applied",
+            "committed",
+            "collected"
+          ]
+        },
+        "elapsedMs": { "type": "integer", "minimum": 0 },
+        "errorMessage": { "type": "string" },
+        "rawText": {
+          "type": "string",
+          "description": "Verbatim broker response — kept for human salvage when diff extraction or apply fails."
+        },
+        "patch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "diff",
+            "files",
+            "sizeBytes",
+            "addedLines",
+            "deletedLines",
+            "commitCount"
+          ],
+          "properties": {
+            "diff": { "type": "string" },
+            "files": { "type": "array", "items": { "type": "string" } },
+            "sizeBytes": { "type": "integer", "minimum": 0 },
+            "addedLines": { "type": "integer", "minimum": 0 },
+            "deletedLines": { "type": "integer", "minimum": 0 },
+            "commitCount": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "builderVerification": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "typecheckExitCode": { "type": "integer" },
+            "testExitCode": { "type": "integer" },
+            "ranAt": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    }
+  }
+}

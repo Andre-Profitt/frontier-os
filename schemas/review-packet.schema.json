@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/review-packet.schema.json",
+  "title": "FrontierOS Review Packet",
+  "description": "Aggregated output from one review-swarm run. N parallel reviewers each call the broker with the adversarial_review skill; the packet collects their findings into one artifact for the arbiter (R4) or operator to consume. The shape of each reviewer's deliverable is defined in skills/adversarial_review/SKILL.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packetId",
+    "scannedAt",
+    "taskClass",
+    "diffSource",
+    "reviewerCount",
+    "validReviewerCount",
+    "invalidReviewerCount",
+    "failedReviewerCount",
+    "reviewCoverage",
+    "reviewers",
+    "totalFindings",
+    "findingsBySeverity",
+    "findingsByCategory",
+    "elapsedMs"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "packetId": { "type": "string", "minLength": 1 },
+    "scannedAt": { "type": "string", "format": "date-time" },
+    "taskClass": { "type": "string", "minLength": 1 },
+    "diffSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["file", "stdin", "ref", "inline"] },
+        "path": { "type": "string" },
+        "ref": { "type": "string" },
+        "sizeBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "reviewerCount": { "type": "integer", "minimum": 1 },
+    "validReviewerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reviewers whose JSON deliverable parsed cleanly into a ReviewerOutput."
+    },
+    "invalidReviewerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reviewers that returned ok=true (broker call succeeded) but the text could not be parsed as a ReviewerOutput. rawText is preserved on the reviewer record."
+    },
+    "failedReviewerCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reviewers where the broker call itself failed (rejection or exception)."
+    },
+    "reviewCoverage": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "validReviewerCount / reviewerCount. The arbiter MUST require this is above a floor before treating an empty findings list as 'reviewClean' — otherwise every reviewer returning unparseable text aggregates to totalFindings=0 (false clean)."
+    },
+    "modelsUsed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "reviewers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reviewerRun" }
+    },
+    "totalFindings": { "type": "integer", "minimum": 0 },
+    "findingsBySeverity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["high", "medium", "low"],
+      "properties": {
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "findingsByCategory": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "elapsedMs": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "reviewerRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewerId", "ok"],
+      "properties": {
+        "reviewerId": { "type": "string", "minLength": 1 },
+        "modelKey": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "elapsedMs": { "type": "integer", "minimum": 0 },
+        "errorMessage": { "type": "string" },
+        "output": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/reviewerOutput" }]
+        },
+        "rawText": {
+          "type": "string",
+          "description": "Verbatim text returned by the broker — kept when JSON parsing fails so a human can salvage."
+        }
+      }
+    },
+    "reviewerOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewerId", "findings", "summary"],
+      "properties": {
+        "patchId": { "type": "string" },
+        "reviewerId": { "type": "string" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "verificationsRun": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "severity", "claim"],
+      "properties": {
+        "category": {
+          "enum": ["bug", "contract_violation", "false_green", "risk", "style"]
+        },
+        "severity": { "enum": ["high", "medium", "low"] },
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 0 },
+        "claim": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "string" },
+        "antiExample": { "type": "string" }
+      }
+    }
+  }
+}
