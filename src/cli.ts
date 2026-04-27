@@ -4009,6 +4009,21 @@ async function cmdQualityRecommend(
     typeof args.flags.margin === "string"
       ? parseFloat(args.flags.margin)
       : undefined;
+  // N2 from Q4 self-review: NaN from a non-numeric flag silently
+  // poisons recommendPolicy (every class becomes no_evidence). Reject
+  // up front so the operator gets an actionable error.
+  if (minSamplesArg !== undefined && !Number.isFinite(minSamplesArg)) {
+    err({
+      error: `--min-samples must be an integer; got "${args.flags["min-samples"]}"`,
+    });
+    return;
+  }
+  if (marginArg !== undefined && !Number.isFinite(marginArg)) {
+    err({
+      error: `--margin must be a number; got "${args.flags.margin}"`,
+    });
+    return;
+  }
   const { existsSync, readFileSync } = await import("node:fs");
   if (!existsSync(policyPath)) {
     err({
