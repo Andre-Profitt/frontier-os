@@ -927,6 +927,115 @@ test("runOrchestration: exit code matches arbiter decision (0/1/2 = accept/rejec
   }
 });
 
+// --- Patch O: per-class gate defaults from policy ----------------------
+
+test("runOrchestration (Patch O): policy class gates apply when CLI flag absent", async () => {
+  // Pin the resolution order: when input.qualityFloor is undefined,
+  // the orchestrator looks up policy class gates via classGatesImpl.
+  // Test seam injects a known gates object; the arbiter decision file
+  // (written by the orchestrator) records the qualityFloor that was
+  // applied, which is what we assert against.
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        // Class gates: qualityFloor 0.42 (a sentinel value the test
+        // checks for in the arbiter-decision.json).
+        classGatesImpl: () => ({
+          qualityFloor: 0.42,
+          minRubricCoverage: 0.31,
+          minReviewCoverage: 0.41,
+        }),
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "patch-o-class-gates",
+        taskDescription: "x",
+        builderCount: 2,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        // NO qualityFloor / minRubricCoverage / minReviewCoverage set
+        // — class gates from the seam should win.
+      },
+    );
+    const decisionPath = resolve(packet.artifactsDir, "arbiter-decision.json");
+    const { readFileSync } = await import("node:fs");
+    const decision = JSON.parse(readFileSync(decisionPath, "utf8"));
+    // qualityFloor is the only gate field the arbiter persists to the
+    // decision file. minRubricCoverage / minReviewCoverage are applied
+    // by the arbiter's eligibility math but aren't recorded — the
+    // decision's per-candidate `eligibility` line is the audit trail
+    // for those.
+    assert.equal(decision.qualityFloor, 0.42);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runOrchestration (Patch O): CLI flag wins over policy class gates", async () => {
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        // Class gates would say qualityFloor=0.42, but the operator
+        // passed --quality-floor 0.99 explicitly. CLI must win.
+        classGatesImpl: () => ({
+          qualityFloor: 0.42,
+        }),
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "patch-o-cli-wins",
+        taskDescription: "x",
+        builderCount: 2,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        qualityFloor: 0.99, // operator override
+      },
+    );
+    const decisionPath = resolve(packet.artifactsDir, "arbiter-decision.json");
+    const { readFileSync } = await import("node:fs");
+    const decision = JSON.parse(readFileSync(decisionPath, "utf8"));
+    assert.equal(decision.qualityFloor, 0.99);
+  } finally {
+    cleanup();
+  }
+});
+
 // --- regression: high-severity reviewer finding routes through correctly --
 
 test("runOrchestration (Patch G B3): missing anti-example surfaces in final report ABOVE the decision line", async () => {

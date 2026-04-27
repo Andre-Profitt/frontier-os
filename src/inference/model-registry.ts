@@ -31,10 +31,23 @@ export interface ClassModel {
   model: string;
 }
 
+// Patch O: per-class arbiter gate defaults. The orchestrator reads
+// these when the operator hasn't passed the corresponding CLI flag.
+// Calibrated to observed real-data (see config/model-policy.json's
+// patch_builder.gates comment for the rationale on the chosen values).
+// Operator-passed CLI flags always override.
+export interface ClassGates {
+  qualityFloor?: number;
+  minRubricCoverage?: number;
+  minReviewCoverage?: number;
+  requireTests?: boolean;
+}
+
 export interface ClassEntry {
   summary: string;
   models: ClassModel[];
   maxParallel: number;
+  gates?: ClassGates;
 }
 
 export interface PolicyDefaults {
@@ -166,6 +179,16 @@ export class ModelRegistry {
 
   classEntry(taskClass: string): ClassEntry | null {
     return this.policy.classes[taskClass] ?? null;
+  }
+
+  // Patch O: per-class gate defaults for the arbiter. Returns the
+  // class's gates object (possibly empty) or undefined if no class
+  // entry exists. Caller decides how to merge with CLI flags + arbiter
+  // built-in defaults; this only reports what the policy says.
+  classGates(taskClass: string): ClassGates | undefined {
+    const entry = this.classEntry(taskClass);
+    if (!entry) return undefined;
+    return entry.gates ?? undefined;
   }
 
   // Filter a class's model list to those whose providers are
