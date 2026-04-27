@@ -20,9 +20,9 @@
 // for re-run verification. The CLI exposes `--cleanup` for callers that
 // want to reclaim the disk after.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 
 import type { InferenceBroker } from "../inference/broker.ts";
 import type { WorktreeManager } from "../builders/worktree-manager.ts";
@@ -255,6 +255,19 @@ async function runOneBuilder(
   }
 
   // ---- 2. render prompt + 3. broker call ----
+  // Inline current contents of every file in the touch list, read from
+  // the builder's worktree. Without this a non-agentic LLM (chat
+  // completion only) has no way to see existing code and ends up
+  // hallucinating function names / line numbers — the diff applies
+  // against an imagined file rather than the real one.
+  // First-real-orchestration finding (2026-04-27): qwen2.5:72b
+  // produced syntactically valid diffs against fictitious code; both
+  // builders failed at apply_failed because the patches referenced
+  // functions that don't exist in the real file.
+  const touchListFiles = renderTouchListFiles(
+    run.worktreePath,
+    input.touchList,
+  );
   const filledPrompt = renderPrompt(promptTemplate, {
     builderId,
     builderCount: String(input.builderCount),
@@ -263,6 +276,7 @@ async function runOneBuilder(
     worktreePath: run.worktreePath,
     branchName: run.branchName,
     touchList: input.touchList.join(", "),
+    touchListFiles,
   });
 
   let brokerResult;
@@ -545,4 +559,50 @@ function newPacketId(nowMs: number): string {
   const ts = Math.floor(nowMs / 1000).toString(36);
   const rand = Math.random().toString(36).slice(2, 8);
   return `build-${ts}-${rand}`;
+}
+
+// Render the contents of every file in the touch list as a fenced
+// markdown block keyed by relative path. Files that don't exist in the
+// worktree are surfaced as `(new file — does not exist yet)` so the
+// model can produce a correct create-file diff. Files larger than the
+// soft cap are truncated with a clear marker — diffs against truncated
+// files will still apply IF the target lines are within the truncation
+// window, but at least the model sees that the file is large.
+const TOUCH_FILE_SOFT_CAP_BYTES = 64_000;
+function renderTouchListFiles(
+  worktreePath: string,
+  touchList: string[],
+): string {
+  if (touchList.length === 0) return "(no touch list provided)";
+  const blocks: string[] = [];
+  for (const rel of touchList) {
+    const abs = resolvePath(worktreePath, rel);
+    if (!existsSync(abs)) {
+      blocks.push(
+        `### ${rel}\n\n(new file — does not exist yet in the worktree)\n`,
+      );
+      continue;
+    }
+    let content: string;
+    try {
+      content = readFileSync(abs, "utf8");
+    } catch (e) {
+      blocks.push(
+        `### ${rel}\n\n(could not read: ${e instanceof Error ? e.message : String(e)})\n`,
+      );
+      continue;
+    }
+    let truncatedNote = "";
+    if (content.length > TOUCH_FILE_SOFT_CAP_BYTES) {
+      content = content.slice(0, TOUCH_FILE_SOFT_CAP_BYTES);
+      truncatedNote = `\n\n(file truncated at ${TOUCH_FILE_SOFT_CAP_BYTES} bytes — full file is longer)\n`;
+    }
+    // Pick a fence that won't collide with content (rare but possible
+    // for files containing markdown). Use 4 backticks; if the content
+    // contains 4-backtick fences, use 5.
+    let fence = "````";
+    if (content.includes(fence)) fence = "`````";
+    blocks.push(`### ${rel}\n\n${fence}\n${content}\n${fence}${truncatedNote}`);
+  }
+  return blocks.join("\n\n");
 }

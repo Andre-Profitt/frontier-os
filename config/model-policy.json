@@ -29,25 +29,28 @@
   "classes": {
     "routine_summary": {
       "summary": "Cheap log compression + pack rendering. Local first.",
-      "models": [
-        { "provider": "ollama-local", "model": "llama3.1:8b" },
-        { "provider": "lmstudio-local", "model": "qwen2.5-7b-instruct" }
-      ],
+      "models": [{ "provider": "ollama-local", "model": "qwen2.5:7b" }],
       "maxParallel": 4
     },
     "patch_builder": {
-      "summary": "Generate code patches in isolated worktrees. Local default until NIM probe lands.",
-      "models": [{ "provider": "ollama-local", "model": "qwen2.5-coder:14b" }],
+      "summary": "Generate code patches in isolated worktrees. Local-only on this host until NIM is enabled. qwen2.5:72b is primary (general strong); deepseek-coder:33b-instruct is the diversity alt for code-shaped tasks.",
+      "models": [
+        { "provider": "ollama-local", "model": "qwen2.5:72b" },
+        { "provider": "ollama-local", "model": "deepseek-coder:33b-instruct" }
+      ],
       "maxParallel": 1
     },
     "adversarial_review": {
-      "summary": "Attack a candidate patch. Diversity matters more than raw quality.",
-      "models": [{ "provider": "ollama-local", "model": "deepseek-coder:33b" }],
+      "summary": "Attack a candidate patch. Diversity matters more than raw quality. deepseek-coder is the primary attacker (code-aware); qwen2.5:72b reviews from a general-knowledge angle.",
+      "models": [
+        { "provider": "ollama-local", "model": "deepseek-coder:33b-instruct" },
+        { "provider": "ollama-local", "model": "qwen2.5:72b" }
+      ],
       "maxParallel": 1
     },
     "research_extraction": {
       "summary": "Read sources and produce a claim ledger.",
-      "models": [{ "provider": "ollama-local", "model": "llama3.1:70b" }],
+      "models": [{ "provider": "ollama-local", "model": "qwen2.5:72b" }],
       "maxParallel": 1
     },
     "merge_arbiter": {

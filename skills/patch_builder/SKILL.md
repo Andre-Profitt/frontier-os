@@ -49,8 +49,16 @@ Task:
 Touch list (files you may edit):
 {{touchList}}
 
+Current contents of those files (read from your worktree — your diff
+must apply against THIS exact text, not a remembered or imagined version):
+
+{{touchListFiles}}
+
 Constraints:
 - Stay inside the touch list.
+- Your diff MUST apply cleanly against the file contents shown above.
+  Use the exact line numbers and surrounding context from those blocks.
+  If you reference a function name, it must appear in the shown content.
 - Run exec.test + exec.typecheck before declaring done.
 - Commit inside your worktree with the standard 3-field format.
 - Do not push.
