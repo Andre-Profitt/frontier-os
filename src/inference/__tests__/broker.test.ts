@@ -554,3 +554,33 @@ test("ModelRegistry.classGates: returns undefined for unknown taskClass", () => 
   const gates = registry.classGates("does-not-exist");
   assert.equal(gates, undefined);
 });
+
+// Patch Q — NIM-first ordering on routine_summary + research_extraction.
+
+test("Patch Q: routine_summary primary is NIM kimi-k2-instruct (with NIM enabled)", () => {
+  // env-injected NVIDIA_API_KEY makes NIM provider effectively enabled
+  // → resolveClassModels returns the policy order which puts NIM
+  // first.
+  const registry = new ModelRegistry({ env: { NVIDIA_API_KEY: "x" } });
+  const models = registry.resolveClassModels("routine_summary");
+  assert.ok(models.length >= 1);
+  assert.equal(models[0]?.provider, "nvidia-nim");
+  assert.equal(models[0]?.model, "moonshotai/kimi-k2-instruct-0905");
+});
+
+test("Patch Q: routine_summary falls back to local when NIM is offline", () => {
+  // No NIM auth → NIM provider is filtered out → local primary wins.
+  const registry = new ModelRegistry({ env: {} });
+  const models = registry.resolveClassModels("routine_summary");
+  assert.ok(models.length >= 1);
+  assert.equal(models[0]?.provider, "ollama-local");
+  assert.equal(models[0]?.model, "qwen2.5:7b");
+});
+
+test("Patch Q: research_extraction primary is NIM kimi-k2-instruct (with NIM enabled)", () => {
+  const registry = new ModelRegistry({ env: { NVIDIA_API_KEY: "x" } });
+  const models = registry.resolveClassModels("research_extraction");
+  assert.ok(models.length >= 1);
+  assert.equal(models[0]?.provider, "nvidia-nim");
+  assert.equal(models[0]?.model, "moonshotai/kimi-k2-instruct-0905");
+});

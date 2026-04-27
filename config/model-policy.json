@@ -29,8 +29,14 @@
   },
   "classes": {
     "routine_summary": {
-      "summary": "Cheap log compression + pack rendering. Local first.",
-      "models": [{ "provider": "ollama-local", "model": "qwen2.5:7b" }],
+      "summary": "Cheap log compression + pack rendering. Patch Q (2026-04-27): NIM kimi-k2-instruct primary because it's fast on the free tier (~0.5s smoke vs local 7B's 1-3s for short prompts on M-series Mac) and free for routine work; qwen2.5:7b stays as offline fallback.",
+      "models": [
+        {
+          "provider": "nvidia-nim",
+          "model": "moonshotai/kimi-k2-instruct-0905"
+        },
+        { "provider": "ollama-local", "model": "qwen2.5:7b" }
+      ],
       "maxParallel": 4
     },
     "patch_builder": {
@@ -70,8 +76,14 @@
       "maxParallel": 1
     },
     "research_extraction": {
-      "summary": "Read sources and produce a claim ledger.",
-      "models": [{ "provider": "ollama-local", "model": "qwen2.5:72b" }],
+      "summary": "Read sources and produce a claim ledger. Patch Q (2026-04-27): NIM kimi-k2-instruct primary — it's instruction-tuned, handles long-context source documents better than qwen2.5:7b, and stays cheap on the free tier. Local qwen2.5:72b is the offline fallback (slow but capable).",
+      "models": [
+        {
+          "provider": "nvidia-nim",
+          "model": "moonshotai/kimi-k2-instruct-0905"
+        },
+        { "provider": "ollama-local", "model": "qwen2.5:72b" }
+      ],
       "maxParallel": 1
     },
     "merge_arbiter": {
