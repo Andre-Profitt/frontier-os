@@ -849,6 +849,11 @@ test("runOrchestration: builderModelKeys forwarded as broker.callClass({modelOve
           testExitCode: 0,
           ranAt: "2026-04-26T22:00:00.000Z",
         }),
+        // Patch P regression: this test pre-dates reviewer auto-
+        // distribution. Disable the policy-driven derivation so the
+        // test's "no reviewer modelOverride" assertion stays meaningful
+        // (separate Patch P tests cover the new auto-derive path).
+        reviewerModelsImpl: () => undefined,
         ...COMMON_DEPS_OVERRIDES,
       },
       {
@@ -869,7 +874,8 @@ test("runOrchestration: builderModelKeys forwarded as broker.callClass({modelOve
       .filter((m): m is string => m !== undefined)
       .sort();
     assert.deepEqual(builderOverrides, ["pinned:k1", "pinned:k2"]);
-    // Reviewer calls have no modelOverride (no reviewerModelKeys forwarded).
+    // Reviewer calls: with reviewerModelsImpl returning undefined,
+    // no modelOverrides should be passed.
     const reviewerOverrides = broker.callLog
       .filter((c) => c.taskClass === "adversarial_review")
       .map((c) => c.modelOverride);
@@ -922,6 +928,111 @@ test("runOrchestration: exit code matches arbiter decision (0/1/2 = accept/rejec
     // Two eligible → escalate → exit 2.
     assert.equal(packet.summary?.arbiterDecision, "escalate_to_human");
     assert.equal(packet.exitCode, 2);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- Patch P: reviewer auto-distribution from policy class models ------
+
+test("runOrchestration (Patch P): reviewerModelsImpl returns keys → reviewers distribute round-robin", async () => {
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        // Two reviewer models per Patch P diversity intent.
+        reviewerModelsImpl: () => ["nim:reviewerA", "nim:reviewerB"],
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "patch-p-reviewer-distribute",
+        taskDescription: "x",
+        builderCount: 2,
+        reviewerCount: 4, // 4 reviewers, 2 models → 2× round-robin
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        qualityFloor: 0.5,
+      },
+    );
+    const reviewerOverrides = broker.callLog
+      .filter((c) => c.taskClass === "adversarial_review")
+      .map((c) => c.modelOverride);
+    // 2 builders collected → 2 review-swarms × 4 reviewers each = 8
+    // calls, each round-robining nim:reviewerA / nim:reviewerB.
+    const counts = reviewerOverrides.reduce<Record<string, number>>(
+      (acc, k) => {
+        const key = k ?? "<undefined>";
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      },
+      {},
+    );
+    assert.ok(counts["nim:reviewerA"] && counts["nim:reviewerA"]! >= 2);
+    assert.ok(counts["nim:reviewerB"] && counts["nim:reviewerB"]! >= 2);
+    // No reviewer call left without an override.
+    assert.equal(counts["<undefined>"] ?? 0, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runOrchestration (Patch P): input.reviewerModelKeys overrides policy auto-derive", async () => {
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        // Policy says nim:fromPolicy, but operator passes
+        // input.reviewerModelKeys explicitly — input wins.
+        reviewerModelsImpl: () => ["nim:fromPolicy"],
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "patch-p-input-wins",
+        taskDescription: "x",
+        builderCount: 1,
+        reviewerCount: 2,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        reviewerModelKeys: ["nim:fromInput"],
+        qualityFloor: 0.5,
+      },
+    );
+    const reviewerOverrides = broker.callLog
+      .filter((c) => c.taskClass === "adversarial_review")
+      .map((c) => c.modelOverride);
+    // All reviewers should use the input override, not the policy.
+    assert.ok(reviewerOverrides.every((m) => m === "nim:fromInput"));
   } finally {
     cleanup();
   }

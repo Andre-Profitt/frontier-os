@@ -25,6 +25,14 @@ export interface OrchestrationInput {
   // Per-builder pinned modelKey list (length should equal builderCount;
   // shorter lists wrap). Forwarded to BuilderSwarmInput.modelKeys.
   builderModelKeys?: string[];
+  // Patch P: per-reviewer pinned modelKey list. When undefined, the
+  // orchestrator derives this from the policy's
+  // adversarial_review.models[] (filtered to enabled providers).
+  // Distributed round-robin: reviewer i uses
+  // reviewerModelKeys[i % reviewerModelKeys.length]. Pre-Patch-P,
+  // reviewers all funneled to the policy primary regardless of how
+  // many alternate models the class listed.
+  reviewerModelKeys?: string[];
   // Required: rubric for the arbiter.
   rubricPath: string;
   // Arbiter gates — defaults match arbiter.ts.
@@ -67,6 +75,7 @@ export interface OrchestrationPacket {
     builderTaskClass?: string;
     reviewerTaskClass?: string;
     builderModelKeys?: string[];
+    reviewerModelKeys?: string[];
     rubricPath?: string;
     qualityFloor?: number;
     minRubricCoverage?: number;

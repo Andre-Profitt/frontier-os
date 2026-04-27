@@ -59,13 +59,13 @@
       }
     },
     "adversarial_review": {
-      "summary": "Attack a candidate patch. Diversity matters more than raw quality — different model families surface different bug classes. Patch N adds NIM Kimi-thinking + GLM for diversity beyond the local Qwen+DeepSeek pair.",
+      "summary": "Attack a candidate patch. Patch P (2026-04-27): reviewers now distribute round-robin across this list (was: all reviewers used the policy primary). Order matters — reviewer-i uses models[i % len]. kimi-k2-thinking first because it's reasoning-tuned + JSON-disciplined; deepseek-coder local was at 50% validity rate as primary in the prior arrangement and kept producing prose paraphrases instead of structured findings, blocking the noBlockingReview gate on otherwise-clean patches.",
       "models": [
-        { "provider": "ollama-local", "model": "deepseek-coder:33b-instruct" },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" },
-        { "provider": "ollama-local", "model": "dolphin-llama3:70b" },
         { "provider": "nvidia-nim", "model": "moonshotai/kimi-k2-thinking" },
-        { "provider": "nvidia-nim", "model": "z-ai/glm-5.1" }
+        { "provider": "nvidia-nim", "model": "z-ai/glm-5.1" },
+        { "provider": "ollama-local", "model": "qwen2.5:72b" },
+        { "provider": "ollama-local", "model": "deepseek-coder:33b-instruct" },
+        { "provider": "ollama-local", "model": "dolphin-llama3:70b" }
       ],
       "maxParallel": 1
     },
