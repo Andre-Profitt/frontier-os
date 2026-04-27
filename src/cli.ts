@@ -4086,7 +4086,7 @@ async function cmdOrchestrate(
   if (!taskId || !description) {
     err({
       error:
-        "orchestrate requires --task <id> --description <text> --rubric <path> [--touch a,b] [--builders 3] [--reviewers 3] [--allow-unscoped-diff] [--quality-floor 0.7] [--min-rubric-coverage 0.5] [--min-review-coverage 0.66] [--require-tests] [--anti-examples a,b] [--lane <ctx-lane>] [--cleanup] [--models nim:k1,nim:k2] [--base-branch X]",
+        "orchestrate requires --task <id> --description <text> --rubric <path> [--touch a,b] [--builders 3] [--reviewers 3] [--allow-unscoped-diff] [--quality-floor 0.7] [--min-rubric-coverage 0.5] [--min-review-coverage 0.66] [--require-tests] [--anti-examples a,b] [--lane <ctx-lane>] [--cleanup] [--models nim:k1,nim:k2] [--base-branch X] [--skip-ingest] [--quality-ledger-dir <path>]",
     });
     return;
   }
@@ -4151,6 +4151,17 @@ async function cmdOrchestrate(
     typeof args.flags["base-branch"] === "string"
       ? args.flags["base-branch"]
       : undefined;
+  // Patch J: auto-ingest into the quality ledger after a successful
+  // orchestration. Default ON because the whole flywheel (Q3
+  // scorecard, Q4 recommend) depends on durable evidence; making
+  // ingest opt-in means operators forget and the ledger stays empty.
+  // --skip-ingest opts out (e.g. when running synthetic / smoke
+  // orchestrations whose data should NOT pollute the routing memory).
+  const skipQualityIngest = args.flags["skip-ingest"] === true;
+  const qualityLedgerDir =
+    typeof args.flags["quality-ledger-dir"] === "string"
+      ? args.flags["quality-ledger-dir"]
+      : undefined;
 
   const { runOrchestration } = await import("./orchestrate/orchestrator.ts");
   const { InferenceBroker } = await import("./inference/broker.ts");
@@ -4200,7 +4211,19 @@ async function cmdOrchestrate(
       ...(cleanup ? { cleanup } : {}),
     },
   );
-  out(packet, pretty);
+  // Patch J: auto-ingest after a successful orchestration. Skipped on
+  // any non-zero exit (the ledger should record real outcomes; partial
+  // / failed runs would corrupt scorecard math). The helper traps any
+  // ingest failure so it can't mask the orchestration's primary result
+  // — operator can always re-ingest by hand:
+  //   frontier quality ledger ingest --artifacts <dir>
+  const { autoIngestOrchestration } =
+    await import("./quality-ledger/auto-ingest.ts");
+  const qualityIngest = autoIngestOrchestration(packet, {
+    skip: skipQualityIngest,
+    ...(qualityLedgerDir ? { ledgerDir: qualityLedgerDir } : {}),
+  });
+  out({ ...packet, qualityIngest }, pretty);
   process.exit(packet.exitCode);
 }
 
