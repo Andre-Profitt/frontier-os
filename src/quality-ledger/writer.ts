@@ -484,10 +484,13 @@ export function markHumanDecision(
     );
   }
 
-  // Resolve packetId + arbiterAgreed from artifactsDir if provided.
+  // Resolve packetId + arbiterAgreed + humanOutcomeRelation from
+  // artifactsDir if provided. arbiterDecision is loaded once and used
+  // for both — computed below.
   let packetId = input.packetId;
   let arbiterAgreed: boolean | undefined;
   let arbiterAgreedComputed = false;
+  let arbiterDecision: ArbiterDecision | undefined;
   if (input.artifactsDir) {
     const arbPath = resolve(input.artifactsDir, "arbiter-decision.json");
     const orchPath = resolve(input.artifactsDir, "orchestration-packet.json");
@@ -501,18 +504,25 @@ export function markHumanDecision(
         // ignore — packetId stays undefined; we'll set a synthetic below
       }
     }
-    if (existsSync(arbPath) && input.acceptedBuilderId) {
+    if (existsSync(arbPath)) {
       try {
-        const arb = JSON.parse(
+        arbiterDecision = JSON.parse(
           readFileSync(arbPath, "utf8"),
         ) as ArbiterDecision;
-        arbiterAgreed = arb.selectedBuilderId === input.acceptedBuilderId;
-        arbiterAgreedComputed = true;
+        if (input.acceptedBuilderId) {
+          arbiterAgreed =
+            arbiterDecision.selectedBuilderId === input.acceptedBuilderId;
+          arbiterAgreedComputed = true;
+        }
       } catch {
         // ignore
       }
     }
   }
+  // Patch K — GPT Pro safe-follow-up: richer than arbiterAgreed.
+  // See HumanOutcomeRelation in types.ts for the enum definition.
+  const humanOutcomeRelation: import("./types.ts").HumanOutcomeRelation =
+    computeHumanOutcomeRelation(input, arbiterDecision);
 
   // Synthetic packetId when the caller didn't link to an orchestration.
   // Operators may want to mark a decision before/without running the
@@ -533,6 +543,7 @@ export function markHumanDecision(
       ? { acceptedBuilderId: input.acceptedBuilderId }
       : {}),
     ...(arbiterAgreed !== undefined ? { arbiterAgreed } : {}),
+    humanOutcomeRelation,
     reason: input.reason,
     ...(input.decidedBy !== undefined ? { decidedBy: input.decidedBy } : {}),
   };
@@ -698,6 +709,46 @@ function appendPacketIndexRow(
 // Aggregate the review packet's findings for the candidate's worker_run
 // row. Mirrors ReviewPacket.findingsBySeverity + findingsByCategory but
 // flattens for the ledger schema.
+// Compute the richer human-vs-arbiter relation from the human's
+// decision + (optionally) the arbiter decision file.
+//
+// Resolution order — each branch returns the most specific relation
+// that fits the observed inputs:
+//   decision=deferred              → "deferred"
+//   decision=escalation_resolved   → "escalation_resolved"
+//   decision=rejected              → "rejected_all"
+//   decision=accepted, no arbiter  → "accepted_manual"
+//                                    (no artifactsDir or arbiter file
+//                                    missing — can't say what arbiter
+//                                    would have picked)
+//   decision=accepted, arbiter has selectedBuilderId === acceptedBuilderId
+//                                  → "accepted_selected"
+//   decision=accepted, arbiter pick differs                 → "accepted_non_selected"
+//   anything else                  → "unknown"
+function computeHumanOutcomeRelation(
+  input: MarkHumanDecisionInput,
+  arbiterDecision: ArbiterDecision | undefined,
+): import("./types.ts").HumanOutcomeRelation {
+  switch (input.decision) {
+    case "deferred":
+      return "deferred";
+    case "escalation_resolved":
+      return "escalation_resolved";
+    case "rejected":
+      return "rejected_all";
+    case "accepted": {
+      if (!arbiterDecision || !input.acceptedBuilderId) {
+        return "accepted_manual";
+      }
+      return arbiterDecision.selectedBuilderId === input.acceptedBuilderId
+        ? "accepted_selected"
+        : "accepted_non_selected";
+    }
+    default:
+      return "unknown";
+  }
+}
+
 function aggregateFindingsForLedger(
   rp: ReviewPacket,
 ): NonNullable<WorkerRunEvent["reviewFindings"]> {

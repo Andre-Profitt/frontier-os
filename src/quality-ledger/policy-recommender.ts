@@ -63,8 +63,13 @@ export interface PolicyRecommendation {
   rationale: string;
   // The current primary entry (provider:model) for this class.
   currentPrimary: string | null;
-  // The recommended primary entry (provider:model) — same as
-  // currentPrimary when action=demote_primary or no_evidence.
+  // The recommended primary entry (provider:model). Distinct rules:
+  //   add_candidate / promote_alternate → the proposed new primary
+  //   demote_primary                    → null (primary is weak but
+  //                                       no listed alternate beats it
+  //                                       by margin; investigate)
+  //   no_evidence                       → currentPrimary (no change
+  //                                       to propose)
   recommendedPrimary: string | null;
   // Evidence: each candidate the recommender considered, sorted by rate
   // descending. The operator can sanity-check the math.
@@ -178,6 +183,13 @@ export function recommendPolicy(
 
     // 3. Primary exists in evidence and ranks last by lowerBound among
     //    candidates with sufficient evidence: demote_primary.
+    //
+    // Patch K — GPT Pro safe-follow-up: recommendedPrimary is null on
+    // this path, NOT a copy of currentPrimary. The action says "this
+    // primary is bad, but no listed alternate beats it by enough margin
+    // either" — claiming the recommendedPrimary is the same as the
+    // current primary would imply the recommender has nothing to do.
+    // null is honest: "investigate; no replacement to propose yet."
     if (
       primaryEvidence !== undefined &&
       evidence.length > 1 &&
@@ -186,9 +198,9 @@ export function recommendPolicy(
       out.push({
         taskClass,
         action: "demote_primary",
-        rationale: `Current primary ${currentPrimary} (rate=${fmt(primaryEvidence.rate)}, lower=${fmt(primaryEvidence.lowerBound)}, n=${primaryEvidence.samples}) ranks last by Wilson lower bound among ${evidence.length} candidates with ≥${minSamples} samples — worth investigating even if no clear replacement exists yet.`,
+        rationale: `Current primary ${currentPrimary} (rate=${fmt(primaryEvidence.rate)}, lower=${fmt(primaryEvidence.lowerBound)}, n=${primaryEvidence.samples}) ranks last by Wilson lower bound among ${evidence.length} candidates with ≥${minSamples} samples — worth investigating even though no listed alternate beats it by ≥${fmt(improvementMargin)} margin.`,
         currentPrimary,
-        recommendedPrimary: currentPrimary,
+        recommendedPrimary: null,
         evidence,
       });
       continue;

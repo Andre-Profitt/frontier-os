@@ -146,6 +146,7 @@ test("markHumanDecision: arbiterAgreed=true when human accepted same builder as 
     );
     assert.equal(r.arbiterAgreedComputed, true);
     assert.equal(r.event.arbiterAgreed, true);
+    assert.equal(r.event.humanOutcomeRelation, "accepted_selected");
     assert.equal(r.event.packetId, "orch-pkt-1");
   });
 });
@@ -166,6 +167,11 @@ test("markHumanDecision: arbiterAgreed=false when human overrode arbiter pick", 
     );
     assert.equal(r.arbiterAgreedComputed, true);
     assert.equal(r.event.arbiterAgreed, false);
+    // Patch K: the highest-value flywheel signal — human accepted a
+    // candidate the arbiter did NOT pick. arbiterAgreed=false collapses
+    // this with "rejected_all" and "accepted_manual"; the relation
+    // distinguishes them.
+    assert.equal(r.event.humanOutcomeRelation, "accepted_non_selected");
   });
 });
 
@@ -182,6 +188,9 @@ test("markHumanDecision: arbiterAgreedComputed=false when no artifactsDir + no a
     );
     assert.equal(r.arbiterAgreedComputed, false);
     assert.equal(r.event.arbiterAgreed, undefined);
+    // No artifactsDir → arbiter relation is "accepted_manual" (the
+    // operator hand-applied a patch off-loop).
+    assert.equal(r.event.humanOutcomeRelation, "accepted_manual");
     // Synthetic packetId (manual-prefix) when no orchestration linked.
     assert.match(r.event.packetId, /^manual-/);
   });
@@ -292,5 +301,58 @@ test("markHumanDecision: 100 parallel marks on same task produce distinct event/
     }
     assert.equal(eventIds.size, 100);
     assert.equal(packetIds.size, 100);
+  });
+});
+
+// --- Patch K: humanOutcomeRelation enum ---------------------------------
+
+// Cover every branch of computeHumanOutcomeRelation. arbiterAgreed is
+// also captured here when relevant so the relationship between the
+// boolean and the new enum is pinned (richer always when artifactsDir
+// is provided + decision=accepted; otherwise the boolean is undefined).
+
+test("markHumanDecision relation: rejected → 'rejected_all' (regardless of arbiter file)", () => {
+  withTempDirs((ledgerDir, artifactsDir) => {
+    writeArbiterDecision(artifactsDir, "b1");
+    writeOrchestrationPacket(artifactsDir, "orch-pkt-rej");
+    const r = markHumanDecision(
+      {
+        taskId: "t1",
+        artifactsDir,
+        decision: "rejected",
+        reason: "all candidates broke the contract",
+      },
+      { ledgerDir },
+    );
+    assert.equal(r.event.humanOutcomeRelation, "rejected_all");
+    assert.equal(r.event.arbiterAgreed, undefined);
+  });
+});
+
+test("markHumanDecision relation: escalation_resolved → 'escalation_resolved'", () => {
+  withTempDirs((ledgerDir) => {
+    const r = markHumanDecision(
+      {
+        taskId: "t1",
+        decision: "escalation_resolved",
+        reason: "fixed manually after escalation",
+      },
+      { ledgerDir },
+    );
+    assert.equal(r.event.humanOutcomeRelation, "escalation_resolved");
+  });
+});
+
+test("markHumanDecision relation: deferred → 'deferred'", () => {
+  withTempDirs((ledgerDir) => {
+    const r = markHumanDecision(
+      {
+        taskId: "t1",
+        decision: "deferred",
+        reason: "revisit after Q3 close",
+      },
+      { ledgerDir },
+    );
+    assert.equal(r.event.humanOutcomeRelation, "deferred");
   });
 });

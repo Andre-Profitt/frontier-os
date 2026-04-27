@@ -431,7 +431,14 @@ function sampleRecord(
   modelKey: string,
   scannedAt: string,
 ): ModelCapacityRecord {
-  const [provider = "?", model = "?"] = modelKey.split(":");
+  // Patch K — GPT Pro safe-follow-up: split on the FIRST colon only.
+  // modelKey is `provider:model`, but the model side legitimately
+  // contains colons (e.g. ollama-local:qwen2.5-coder:14b → provider
+  // "ollama-local", model "qwen2.5-coder:14b"). Bare `.split(":")`
+  // would mis-segment such keys, dropping the `:14b` suffix.
+  const idx = modelKey.indexOf(":");
+  const provider = idx >= 0 ? modelKey.slice(0, idx) : "?";
+  const model = idx >= 0 ? modelKey.slice(idx + 1) : "?";
   return {
     modelKey,
     provider,

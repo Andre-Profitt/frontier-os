@@ -174,7 +174,19 @@
         },
         "arbiterAgreed": {
           "type": "boolean",
-          "description": "True iff acceptedBuilderId matches the arbiter's recommended selectedBuilderId for this packet. Computed by the writer at mark time when both are known."
+          "description": "True iff acceptedBuilderId matches the arbiter's recommended selectedBuilderId for this packet. Computed by the writer at mark time when both are known. Kept for back-compat; prefer humanOutcomeRelation for new consumers."
+        },
+        "humanOutcomeRelation": {
+          "enum": [
+            "accepted_selected",
+            "accepted_non_selected",
+            "accepted_manual",
+            "rejected_all",
+            "escalation_resolved",
+            "deferred",
+            "unknown"
+          ],
+          "description": "Richer than arbiterAgreed: distinguishes accepted-but-different-candidate (accepted_non_selected — highest-value flywheel signal), rejected-everything, escalated, deferred, manual cherry-pick. Computed by the writer."
         },
         "reason": { "type": "string", "minLength": 1 },
         "decidedBy": {

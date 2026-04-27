@@ -179,7 +179,11 @@ test("recommendPolicy: demote_primary when primary ranks last but no clear winne
   });
   assert.equal(recs[0]!.action, "demote_primary");
   assert.equal(recs[0]!.currentPrimary, "ollama-local:qwen2.5-coder:14b");
-  assert.equal(recs[0]!.recommendedPrimary, "ollama-local:qwen2.5-coder:14b");
+  // Patch K: demote_primary now returns recommendedPrimary=null
+  // because no listed alternate beats the primary by ≥ margin.
+  // Returning the same key as currentPrimary would imply "no change"
+  // — null is the honest "investigate; nothing to swap to yet."
+  assert.equal(recs[0]!.recommendedPrimary, null);
 });
 
 // --- no recommendation when primary is fine -----------------------------
@@ -493,6 +497,55 @@ test("recommendPolicy: input policy object is not mutated", () => {
     { minSamples: 3 },
   );
   assert.equal(JSON.stringify(policy), before);
+});
+
+// --- modelKey colon round-trip (Patch K, safe-follow-up) ----------------
+
+// modelKey is `provider:model`. The model side can contain colons
+// (e.g. `qwen2.5-coder:14b`). Pin that the recommender treats modelKey
+// as opaque — never splits, never reconstructs by re-joining provider
+// + model — so a multi-colon model name flows through scorecard →
+// recommendation → CLI output identically to a no-colon name.
+test("recommendPolicy: modelKey with colons in the model segment round-trips intact", () => {
+  const policy = policyWith({
+    patch_builder: {
+      models: [
+        { provider: "ollama-local", model: "qwen2.5-coder:14b" }, // primary
+        { provider: "nvidia-nim", model: "qwen3-coder:480b" }, // alternate
+      ],
+    },
+  });
+  const scores: ModelScore[] = [
+    builderScore({
+      modelKey: "ollama-local:qwen2.5-coder:14b",
+      orchestrationsParticipated: 30,
+      selectionRate: 0.2,
+    }),
+    builderScore({
+      modelKey: "nvidia-nim:qwen3-coder:480b",
+      orchestrationsParticipated: 30,
+      selectionRate: 0.8,
+    }),
+  ];
+  const recs = recommendPolicy(policy, scores, {
+    minSamples: 3,
+    improvementMargin: 0.1,
+  });
+  // Promotion fires; both modelKeys are preserved exactly.
+  assert.equal(recs.length, 1);
+  assert.equal(recs[0]!.action, "promote_alternate");
+  assert.equal(recs[0]!.currentPrimary, "ollama-local:qwen2.5-coder:14b");
+  assert.equal(recs[0]!.recommendedPrimary, "nvidia-nim:qwen3-coder:480b");
+  // Evidence rows preserve the keys character-for-character.
+  const ids = recs[0]!.evidence.map((e) => e.modelKey).sort();
+  assert.deepEqual(ids, [
+    "nvidia-nim:qwen3-coder:480b",
+    "ollama-local:qwen2.5-coder:14b",
+  ]);
+  // Rationale text contains both keys (sanity — no "qwen3-coder" alone
+  // sneaking through a split).
+  assert.match(recs[0]!.rationale, /ollama-local:qwen2\.5-coder:14b/);
+  assert.match(recs[0]!.rationale, /nvidia-nim:qwen3-coder:480b/);
 });
 
 // --- empty scores --------------------------------------------------------
