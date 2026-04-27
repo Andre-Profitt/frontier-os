@@ -56,16 +56,38 @@ must apply against THIS exact text, not a remembered or imagined version):
 
 Constraints:
 - Stay inside the touch list.
-- Your diff MUST apply cleanly against the file contents shown above.
-  Use the exact line numbers and surrounding context from those blocks.
-  If you reference a function name, it must appear in the shown content.
+- Output your edits as **search/replace blocks** (preferred — see format
+  below). The runner applies them by exact-string match, NOT by line
+  numbers, so SEARCH text must be character-for-character identical to
+  what appears in the file content shown above.
+- If you absolutely must use a unified diff instead, ensure it applies
+  cleanly against the file contents shown above. Search/replace is the
+  default; unified diff is the fallback.
 - Run exec.test + exec.typecheck before declaring done.
 - Commit inside your worktree with the standard 3-field format.
 - Do not push.
 - Do not call other model classes.
 
+Search/replace block format (one block per edit; multiple blocks ok):
+
+  path/to/file.ts
+  <<<<<<< SEARCH
+  exact text from the file shown above, including leading whitespace
+  =======
+  the new text you want in its place
+  >>>>>>> REPLACE
+
+Rules for SEARCH text:
+- Must appear EXACTLY ONCE in the current file content. If your target
+  is a one-line change in a place where the line shape repeats (e.g. a
+  `}` brace), include enough surrounding lines to make the SEARCH unique.
+- Preserve all whitespace and indentation exactly.
+- To create a NEW file, leave SEARCH empty and put the full file
+  content in REPLACE.
+
 Deliverable:
-1. The diff (apply with `git apply` or just commit it).
+1. One or more search/replace blocks (preferred) OR a unified diff
+   (fallback). The runner accepts either; do not emit both.
 2. A 1-paragraph rationale: what you changed and why.
 3. Assumptions: any decisions the task didn't specify.
 4. Verification record: the exact commands you ran and their exit codes.
