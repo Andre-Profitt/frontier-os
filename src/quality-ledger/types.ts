@@ -110,9 +110,35 @@ export interface ModelEvent extends BaseEvent {
   arbiterSelectedCount?: number;
 }
 
+// How the human verdict relates to the arbiter's pick. A boolean
+// (arbiterAgreed) compresses too much: "human accepted but a different
+// candidate" and "human rejected everything" both end up false. Patch K
+// (GPT Pro safe-follow-up) adds this richer relation alongside the
+// boolean so downstream learners can distinguish each case.
+export type HumanOutcomeRelation =
+  // Human accepted the candidate the arbiter picked. Arbiter was right.
+  | "accepted_selected"
+  // Human accepted a candidate the arbiter did NOT pick. Arbiter ranked
+  // wrong — highest-value training signal for the routing flywheel.
+  | "accepted_non_selected"
+  // Human accepted a manually-applied / hand-edited patch (no
+  // acceptedBuilderId on file, or accepted builder isn't a candidate
+  // the arbiter saw). Treat as "neither agreed nor disagreed."
+  | "accepted_manual"
+  // Human rejected ALL candidates regardless of arbiter pick.
+  | "rejected_all"
+  // Human escalated → resolved out of band; arbiter relation moot.
+  | "escalation_resolved"
+  // Human deferred (will revisit later).
+  | "deferred"
+  // No artifactsDir was linked, so we can't say what the arbiter would
+  // have picked. Fall back to "unknown" rather than guess.
+  | "unknown";
+
 // Human's actual decision after looking at the arbiter's recommendation.
 // PR Q2 writes these via `frontier quality mark`. PR Q3+ uses them as
-// ground-truth labels: when arbiterAgreed=false, the arbiter's pick was
+// ground-truth labels: when arbiterAgreed=false (or
+// humanOutcomeRelation=accepted_non_selected), the arbiter's pick was
 // overridden — that's signal for the model-routing flywheel.
 export interface HumanDecisionEvent extends BaseEvent {
   kind: "human_decision";
@@ -122,8 +148,13 @@ export interface HumanDecisionEvent extends BaseEvent {
   acceptedBuilderId?: string;
   // True iff acceptedBuilderId matches the arbiter's recommended
   // selectedBuilderId on the same packet. Computed at mark-time when
-  // both are known.
+  // both are known. Kept for back-compat; prefer humanOutcomeRelation
+  // for new consumers (it distinguishes accepted_non_selected,
+  // rejected_all, etc., which the boolean collapses).
   arbiterAgreed?: boolean;
+  // Richer expression of the human-vs-arbiter relationship. See
+  // HumanOutcomeRelation for the full enum.
+  humanOutcomeRelation?: HumanOutcomeRelation;
   reason: string;
   decidedBy?: string;
 }
