@@ -300,12 +300,26 @@ async function runOneBuilder(
         : {}),
     });
   } catch (e) {
-    return failureWithRun(run, "broker_failed", now() - tStart, e);
+    // Patch T: attribute the failure to the pinned model when present.
+    // Symmetric to Patch R blocker #3 for reviewers — without this,
+    // model_event aggregation drops pinned-builder failures (writer's
+    // "if (!c.modelKey) continue;" skips the row), making targeted-
+    // builder failure rates invisible in the scorecard.
+    return failureWithRun(
+      run,
+      "broker_failed",
+      now() - tStart,
+      e,
+      input.pinnedModelKey,
+    );
   }
 
   if (!brokerResult.ok || !brokerResult.selected) {
     return {
       builderId,
+      ...(input.pinnedModelKey !== undefined
+        ? { modelKey: input.pinnedModelKey }
+        : {}),
       runId: run.runId,
       worktreePath: run.worktreePath,
       ok: false,
@@ -590,9 +604,16 @@ function failureWithRun(
   phase: CandidatePhase,
   elapsedMs: number,
   e: unknown,
+  // Patch T: caller passes pinnedModelKey when present so failed
+  // candidates carry the intended model in their CandidatePatch
+  // record. Don't invent a modelKey when undefined — the writer
+  // treats undefined as "unknown model" and skips aggregation, which
+  // is correct for unpinned calls.
+  pinnedModelKey?: string,
 ): CandidatePatch {
   return {
     builderId: run.builderId,
+    ...(pinnedModelKey !== undefined ? { modelKey: pinnedModelKey } : {}),
     runId: run.runId,
     worktreePath: run.worktreePath,
     ok: false,

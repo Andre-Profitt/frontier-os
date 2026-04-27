@@ -537,6 +537,122 @@ test("runBuilderSwarm: pinned modelKeys carry through to BuilderRun", async () =
   }
 });
 
+// --- Patch T: builder modelKey parity on broker_failed ----------------
+
+test("runBuilderSwarm (Patch T): pinned builder + broker rejection → modelKey=pinnedModelKey on failed candidate", async () => {
+  // Symmetric fix to Patch R blocker #3 for reviewers. When
+  // modelKeys is set, the round-robin model assignment must survive
+  // even when the broker call is rejected. Without this, the quality
+  // ledger's model_event aggregation drops failures for the pinned
+  // model entirely (the writer's "if (!c.modelKey) continue;" skips
+  // the row), making pinned-builder failure rates invisible in the
+  // scorecard — exactly the gap GPT Pro flagged for reviewers.
+  const broker = new StubBroker();
+  broker.enqueue("empty"); // builder 1 → broker rejection
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-t-rejection",
+        taskDescription: "x",
+        builderCount: 2,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        modelKeys: ["pinned:k1", "pinned:k2"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const failed = packet.candidates.find((c) => c.phase === "broker_failed");
+    assert.ok(failed, "expected one broker_failed candidate");
+    assert.equal(
+      failed?.modelKey,
+      "pinned:k1",
+      "failed pinned builder must carry its assigned modelKey for ledger attribution",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch T): pinned builder + broker exception → modelKey=pinnedModelKey on failed candidate", async () => {
+  // Same parity rule for the exception path.
+  const broker = new StubBroker();
+  broker.enqueue({ throw: new Error("network down") });
+  broker.enqueue({
+    ok: true,
+    assistantText: `\`\`\`diff\n${SAMPLE_DIFF}\`\`\``,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-t-exception",
+        taskDescription: "x",
+        builderCount: 2,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        modelKeys: ["pinned:k1", "pinned:k2"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const failed = packet.candidates.find((c) => c.phase === "broker_failed");
+    assert.ok(failed, "expected one broker_failed candidate");
+    assert.equal(
+      failed?.modelKey,
+      "pinned:k1",
+      "failed pinned builder (exception) must carry its assigned modelKey",
+    );
+    assert.match(failed?.errorMessage ?? "", /network down/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch T): unpinned builder + broker rejection → modelKey undefined (no regression)", async () => {
+  // Non-regression: when no modelKeys is set, failed candidates still
+  // leave modelKey undefined. The fix only attributes failures to the
+  // *known* pinned key — it must NOT invent one for unpinned calls.
+  const broker = new StubBroker();
+  broker.enqueue("empty");
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-t-unpinned",
+        taskDescription: "x",
+        builderCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "broker_failed");
+    assert.equal(c?.modelKey, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
 test("runBuilderSwarm: spawn failure surfaces as candidate.phase=spawn_failed without crashing the swarm", async () => {
   const broker = new StubBroker();
   broker.enqueue({
