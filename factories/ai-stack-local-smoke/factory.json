@@ -1,6 +1,16 @@
 {
   "factoryId": "ai-stack-local-smoke",
-  "version": "v2",
+  "version": "v3",
+  "activation": {
+    "defaultMode": "shadow",
+    "modeNotes": "observe=read context only, no run; shadow=factory runs but does not emit alerts (legacy lane still authoritative); active=factory owns the lane, emits alerts when no legacy alert correlates; disabled=supervisor returns immediately, no run. Runtime override: factories/<lane>/state/mode.json. Kill-switch override: factories/<lane>/state/disabled (wins over everything).",
+    "staleAfterHours": 26,
+    "leaseTtlSeconds": 600,
+    "leaseLockFile": "factories/ai-stack-local-smoke/state/lock.json",
+    "modeFile": "factories/ai-stack-local-smoke/state/mode.json",
+    "latestRunFile": "factories/ai-stack-local-smoke/state/latest-run.json",
+    "plistBackupDir": "factories/ai-stack-local-smoke/state/backups"
+  },
   "summary": "First-factory cell wrapping ai-stack.local-smoke-nightly. Concrete-first; do not generalize.",
   "objective": "Keep ai-stack.local-smoke-nightly healthy.",
   "lane": {

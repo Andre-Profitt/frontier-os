@@ -2791,6 +2791,173 @@ async function cmdSalesforceAuditBatch(
   }
 }
 
+// ---- factory family (Phase 7: dark-factory supervisor status) ----
+
+async function cmdFactoryStatus(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const factoryId =
+    typeof args.flags.lane === "string"
+      ? args.flags.lane
+      : (args.positional[0] ?? "");
+  if (!factoryId) {
+    err({ error: "factory status requires <factoryId> (or --lane <id>)" });
+    return;
+  }
+  // Concrete-first: only the ai-stack-local-smoke factory is wired today.
+  // Adding a second factory would generalize this dispatch.
+  if (factoryId !== "ai-stack-local-smoke") {
+    err({
+      error: `unknown factory: ${factoryId}`,
+      expected: ["ai-stack-local-smoke"],
+    });
+    return;
+  }
+  const { resolve } = await import("node:path");
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { homedir } = await import("node:os");
+  const { readLatestRun, assessStaleness } =
+    await import("../factories/ai-stack-local-smoke/latest-run.ts");
+  const { readActiveLease, isProcessAlive } =
+    await import("../factories/ai-stack-local-smoke/lease.ts");
+
+  const repoRoot = resolve(homedir(), "frontier-os");
+  const specPath = resolve(repoRoot, "factories", factoryId, "factory.json");
+  const spec = JSON.parse(readFileSync(specPath, "utf8")) as {
+    policy: { killSwitchFile: string };
+    activation: {
+      latestRunFile: string;
+      leaseLockFile: string;
+      staleAfterHours: number;
+    };
+  };
+  const killSwitchPath = resolve(repoRoot, spec.policy.killSwitchFile);
+  const latestRunPath = resolve(repoRoot, spec.activation.latestRunFile);
+  const lockPath = resolve(repoRoot, spec.activation.leaseLockFile);
+
+  const latestRun = readLatestRun(latestRunPath);
+  const lease = readActiveLease(lockPath);
+  const lockHeld =
+    lease !== null &&
+    isProcessAlive(lease.pid) &&
+    Date.parse(lease.expiresAt) > Date.now();
+
+  const verdict = assessStaleness({
+    latestRun,
+    now: new Date(),
+    staleWindowSeconds: spec.activation.staleAfterHours * 3600,
+    killSwitchActive: existsSync(killSwitchPath),
+    lockHeld,
+  });
+
+  const wantJson =
+    pretty || args.flags.json === true || args.flags.json === "true";
+
+  const report = {
+    factoryId,
+    status: verdict.status,
+    detail: verdict.detail,
+    ageSeconds: verdict.ageSeconds,
+    latestRun,
+    lease,
+    paths: {
+      latestRunPath,
+      lockPath,
+      killSwitchPath,
+    },
+  };
+
+  if (wantJson) {
+    out(report, pretty);
+  } else {
+    process.stdout.write(
+      [
+        `factory: ${factoryId}`,
+        `status:  ${verdict.status}`,
+        `detail:  ${verdict.detail}`,
+        verdict.ageSeconds !== null ? `ageSec:  ${verdict.ageSeconds}` : null,
+        latestRun
+          ? `lastRun: ${latestRun.runId} (${latestRun.classification})`
+          : null,
+        lease ? `lease:   ${lease.runId} pid=${lease.pid}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n") + "\n",
+    );
+  }
+
+  // Exit code maps to status per spec: 0=fresh, 1=stale|missing, 2=failed,
+  // 3=ambiguous, 4=disabled, 5=locked. Per Phase 7 brief.
+  const code =
+    verdict.status === "fresh"
+      ? 0
+      : verdict.status === "stale" || verdict.status === "missing"
+        ? 1
+        : verdict.status === "failed"
+          ? 2
+          : verdict.status === "ambiguous"
+            ? 3
+            : verdict.status === "disabled"
+              ? 4
+              : 5; // locked
+  process.exit(code);
+}
+
+// ---- factory reconcile (control-loop entry; mutating) ----
+
+async function cmdFactoryReconcile(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const factoryId =
+    typeof args.flags.lane === "string"
+      ? args.flags.lane
+      : (args.positional[0] ?? "");
+  if (factoryId !== "ai-stack-local-smoke") {
+    err({
+      error: `factory reconcile only supports ai-stack-local-smoke today`,
+      received: factoryId,
+    });
+    return;
+  }
+  const desiredMode =
+    typeof args.flags.mode === "string"
+      ? (args.flags.mode as "shadow" | "active" | "observe" | "disabled")
+      : "shadow";
+  const trigger =
+    typeof args.flags.trigger === "string"
+      ? (args.flags.trigger as "manual" | "launchd" | "watchdog")
+      : "manual";
+  const staleAfterHours =
+    typeof args.flags["stale-after-hours"] === "string"
+      ? Number(args.flags["stale-after-hours"])
+      : 26;
+  const { reconcileLocalSmokeFactory } =
+    await import("../factories/ai-stack-local-smoke/reconciler.ts");
+  const rec = await reconcileLocalSmokeFactory({
+    factoryId: "ai-stack-local-smoke",
+    desiredMode,
+    trigger,
+    staleAfterHours,
+  });
+  out(rec, pretty);
+  // Same exit-code mapping as factory status, plus 6 for reconciler crash.
+  const code =
+    rec.status === "fresh"
+      ? 0
+      : rec.status === "stale" || rec.status === "missing"
+        ? 1
+        : rec.status === "failed"
+          ? 2
+          : rec.status === "ambiguous"
+            ? 3
+            : rec.status === "disabled"
+              ? 4
+              : 5;
+  process.exit(code);
+}
+
 // ---- context family (Phase 2: lane context pack) ----
 
 async function cmdContextPack(
@@ -3589,6 +3756,10 @@ async function main(): Promise<void> {
           context: [
             "pack --lane <lane> [--json] [--pretty] [--no-alerts] [--alert-lookback-days N]",
           ],
+          factory: [
+            "status <factoryId> [--json] [--pretty]  exit 0 fresh, 1 stale|missing, 2 failed, 3 ambiguous, 4 disabled, 5 locked",
+            "reconcile <factoryId> [--mode shadow|active|observe|disabled] [--trigger manual|launchd|watchdog] [--stale-after-hours 26]  observe→decide→apply→assert; same exit-code mapping",
+          ],
         },
         notes: [
           "Output is JSON by default. --json is accepted for explicit callers; pass --pretty for indented JSON.",
@@ -3925,6 +4096,20 @@ async function main(): Promise<void> {
         return err({
           error: `unknown context subcommand: ${args.subcommand ?? "(none)"}`,
           expected: ["pack"],
+        });
+    }
+  }
+
+  if (args.family === "factory") {
+    switch (args.subcommand) {
+      case "status":
+        return cmdFactoryStatus(args, pretty);
+      case "reconcile":
+        return cmdFactoryReconcile(args, pretty);
+      default:
+        return err({
+          error: `unknown factory subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["status", "reconcile"],
         });
     }
   }
