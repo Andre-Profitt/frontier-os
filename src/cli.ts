@@ -3727,6 +3727,122 @@ async function cmdGhostQueue(args: ParsedArgs, pretty: boolean): Promise<void> {
   out({ queued: graphPath, destination: dest }, pretty);
 }
 
+// ---- quality family (PR Q1: quality ledger writer + reader) ----
+
+async function cmdQualityLedgerIngest(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const artifactsDir =
+    typeof args.flags.artifacts === "string" ? args.flags.artifacts : undefined;
+  if (!artifactsDir) {
+    err({
+      error:
+        "quality ledger ingest requires --artifacts <path-to-orchestration-dir> [--ledger-dir <path>] [--dry-run]",
+    });
+    return;
+  }
+  const ledgerDir =
+    typeof args.flags["ledger-dir"] === "string"
+      ? args.flags["ledger-dir"]
+      : undefined;
+  const dryRun = args.flags["dry-run"] === true;
+  const { ingestArtifactsDir } = await import("./quality-ledger/writer.ts");
+  const result = ingestArtifactsDir(artifactsDir, {
+    ...(ledgerDir ? { ledgerDir } : {}),
+    dryRun,
+  });
+  out(
+    {
+      artifactsDir,
+      ledgerDir: ledgerDir ?? "default (state/quality-ledger)",
+      dryRun,
+      counts: {
+        workerRuns: result.workerRuns,
+        reviewFindings: result.reviewFindings,
+        arbiterDecisions: result.arbiterDecisions,
+        modelEvents: result.modelEvents,
+      },
+      appendedAt: result.appendedAt,
+    },
+    pretty,
+  );
+}
+
+async function cmdQualityLedgerShow(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const ledgerDir =
+    typeof args.flags["ledger-dir"] === "string"
+      ? args.flags["ledger-dir"]
+      : undefined;
+  const taskFilter =
+    typeof args.flags.task === "string" ? args.flags.task : undefined;
+  const limit =
+    typeof args.flags.limit === "string" ? parseInt(args.flags.limit, 10) : 50;
+  const { readLedger } = await import("./quality-ledger/reader.ts");
+  const snapshot = readLedger({ ...(ledgerDir ? { ledgerDir } : {}) });
+  const filtered = {
+    workerRuns: snapshot.workerRuns
+      .filter((e) => !taskFilter || e.taskId === taskFilter)
+      .slice(-limit),
+    reviewFindings: snapshot.reviewFindings
+      .filter((e) => !taskFilter || e.taskId === taskFilter)
+      .slice(-limit),
+    arbiterDecisions: snapshot.arbiterDecisions
+      .filter((e) => !taskFilter || e.taskId === taskFilter)
+      .slice(-limit),
+    modelEvents: snapshot.modelEvents
+      .filter((e) => !taskFilter || e.taskId === taskFilter)
+      .slice(-limit),
+  };
+  out(
+    {
+      counts: {
+        workerRuns: filtered.workerRuns.length,
+        reviewFindings: filtered.reviewFindings.length,
+        arbiterDecisions: filtered.arbiterDecisions.length,
+        modelEvents: filtered.modelEvents.length,
+      },
+      tail: filtered,
+    },
+    pretty,
+  );
+}
+
+async function cmdQualityModelScore(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const ledgerDir =
+    typeof args.flags["ledger-dir"] === "string"
+      ? args.flags["ledger-dir"]
+      : undefined;
+  const role =
+    typeof args.flags.role === "string"
+      ? (args.flags.role as "builder" | "reviewer")
+      : undefined;
+  const taskClass =
+    typeof args.flags["task-class"] === "string"
+      ? args.flags["task-class"]
+      : undefined;
+  if (role && role !== "builder" && role !== "reviewer") {
+    err({
+      error: `--role must be 'builder' or 'reviewer'; got "${role}"`,
+    });
+    return;
+  }
+  const { computeModelScores } =
+    await import("./quality-ledger/model-score.ts");
+  const scores = computeModelScores({
+    ...(ledgerDir ? { ledgerDir } : {}),
+    ...(role ? { role } : {}),
+    ...(taskClass ? { taskClass } : {}),
+  });
+  out({ scores }, pretty);
+}
+
 // ---- orchestrate family (PR R6: the loop) ----
 
 async function cmdOrchestrate(
@@ -4869,6 +4985,30 @@ async function main(): Promise<void> {
 
   if (args.family === "orchestrate") {
     return cmdOrchestrate(args, pretty);
+  }
+
+  if (args.family === "quality") {
+    switch (args.subcommand) {
+      case "ledger":
+        switch (args.positional[0]) {
+          case "ingest":
+            return cmdQualityLedgerIngest(args, pretty);
+          case "show":
+            return cmdQualityLedgerShow(args, pretty);
+          default:
+            return err({
+              error: `unknown quality ledger subcommand: ${args.positional[0] ?? "(none)"}`,
+              expected: ["ingest", "show"],
+            });
+        }
+      case "model-score":
+        return cmdQualityModelScore(args, pretty);
+      default:
+        return err({
+          error: `unknown quality subcommand: ${args.subcommand ?? "(none)"}`,
+          expected: ["ledger ingest", "ledger show", "model-score"],
+        });
+    }
   }
 
   if (args.family === "arbiter") {

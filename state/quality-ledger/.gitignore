@@ -1,0 +1,5 @@
+# Quality ledger JSONL files — durable per-orchestration evidence,
+# never committed. Each `frontier orchestrate` run appends rows here
+# via `frontier quality ledger ingest`. The model-score CLI reads
+# these files to answer "which model is good at which role."
+*.jsonl
