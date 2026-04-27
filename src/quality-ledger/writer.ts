@@ -154,6 +154,9 @@ export function buildEvents(
         ? { rubricScore: rubric.score, rubricCoverage: rubric.coverage }
         : {}),
       ...(verPhase !== undefined ? { verificationPhase: verPhase } : {}),
+      ...(c.applyAttempts !== undefined
+        ? { applyAttempts: c.applyAttempts }
+        : {}),
       arbiterOutcome,
       ...(review
         ? {
