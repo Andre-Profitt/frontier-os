@@ -77,9 +77,15 @@ interface StubResponse {
 class StubBroker implements Pick<InferenceBroker, "callClass"> {
   private queue: Array<StubResponse | { throw: Error } | "empty"> = [];
   private modelKey = "stub:m1";
-  // Per-call snapshot of (taskClass, modelOverride) — used by Patch C
-  // tests to assert each builder routed to its pinned model.
-  public callLog: Array<{ taskClass: string; modelOverride?: string }> = [];
+  // Per-call snapshot of (taskClass, modelOverride, prompt) — used by
+  // Patch C tests to assert each builder routed to its pinned model,
+  // and by Patch Y tests to inspect the retry prompt's appended
+  // feedback (previous rawText + apply error).
+  public callLog: Array<{
+    taskClass: string;
+    modelOverride?: string;
+    prompt?: string;
+  }> = [];
 
   enqueue(
     ...responses: Array<StubResponse | { throw: Error } | "empty">
@@ -96,11 +102,22 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
   }
 
   async callClass(opts: BrokerCallOptions): Promise<BrokerCallResult> {
-    const logEntry: { taskClass: string; modelOverride?: string } = {
+    const logEntry: {
+      taskClass: string;
+      modelOverride?: string;
+      prompt?: string;
+    } = {
       taskClass: opts.taskClass,
     };
     if (opts.modelOverride !== undefined) {
       logEntry.modelOverride = opts.modelOverride;
+    }
+    // Capture the user-message prompt text so retry tests can assert
+    // the structured feedback (previous response + apply error) was
+    // appended on the second call.
+    const userMsg = opts.messages?.find((m) => m.role === "user");
+    if (userMsg && typeof userMsg.content === "string") {
+      logEntry.prompt = userMsg.content;
     }
     this.callLog.push(logEntry);
     const next = this.queue.shift();
@@ -1347,6 +1364,312 @@ test("runBuilderSwarm: scope_rejected packet still validates against builder-swa
       },
     );
     assert.equal(packet.candidates[0]?.phase, "scope_rejected");
+    const valid = validateBuilderSwarmPacket(packet);
+    if (!valid) {
+      console.error(JSON.stringify(validateBuilderSwarmPacket.errors, null, 2));
+    }
+    assert.equal(valid, true);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- Patch Y: S/R apply retry with structured feedback -----------------
+//
+// When the model emits S/R blocks whose SEARCH text does not match the
+// real file content, applySearchReplaceBlocks fails with a structured
+// error ("SEARCH text not found", "matches N locations", etc). Pre-Patch-Y
+// this terminated the candidate as apply_failed — a wasted broker call
+// for what is often a recoverable hallucination (model paraphrased a
+// line from the rendered touchList instead of copying it verbatim).
+//
+// Patch Y gives the builder ONE retry: re-prompt with the original user
+// message + the previous response + the apply error, and re-run the S/R
+// pipeline. If the retry succeeds, the candidate is applied normally
+// (applyAttempts=2). If it fails again, we surface apply_failed with the
+// combined transcript in rawText.
+//
+// Default maxApplyRetries=1 (one retry). maxApplyRetries=0 disables the
+// loop entirely (legacy behavior preserved for callers that want it).
+//
+// Retry covers ONLY the S/R apply path, not unified-diff apply. S/R
+// hallucination is the dominant local-70B failure mode this addresses;
+// unified-diff line drift has its own resolution path (Patch M).
+
+test("runBuilderSwarm (Patch Y): S/R apply fails on attempt 1, succeeds on attempt 2 → collected, applyAttempts=2, retry prompt carries feedback", async () => {
+  const broker = new StubBroker();
+  // Attempt 1: SEARCH text NOT in README.md (real content is "# test\n").
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# this exact line does not exist in the file
+=======
+# replaced
+>>>>>>> REPLACE
+`,
+  });
+  // Attempt 2: correct SEARCH.
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# replaced via Patch Y retry
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-y-retry-success",
+        taskDescription: "Patch Y retry path",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(
+      c?.ok,
+      true,
+      `expected collected on retry, got ${c?.phase}: ${c?.errorMessage}`,
+    );
+    assert.equal(c?.phase, "collected");
+    assert.equal(
+      c?.applyAttempts,
+      2,
+      "applyAttempts must reflect the retry count",
+    );
+    // Two broker calls observed; the second's prompt includes the
+    // previous response + the apply error.
+    assert.equal(broker.callLog.length, 2);
+    const retryPrompt = broker.callLog[1]?.prompt ?? "";
+    assert.match(
+      retryPrompt,
+      /PREVIOUS ATTEMPT FAILED/i,
+      "retry prompt should call out that the previous attempt failed",
+    );
+    assert.match(
+      retryPrompt,
+      /SEARCH text not found/i,
+      "retry prompt should include the structured apply error",
+    );
+    assert.match(
+      retryPrompt,
+      /this exact line does not exist in the file/,
+      "retry prompt should include the previous response so the model can correct it",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Y): S/R apply fails on both attempts → apply_failed with applyAttempts=2 and combined rawText", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# nope-1
+=======
+# r1
+>>>>>>> REPLACE
+`,
+  });
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# nope-2
+=======
+# r2
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-y-retry-fail",
+        taskDescription: "both attempts hallucinate SEARCH",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.ok, false);
+    assert.equal(c?.phase, "apply_failed");
+    assert.equal(
+      c?.applyAttempts,
+      2,
+      "applyAttempts must reflect both attempts",
+    );
+    assert.match(
+      c?.errorMessage ?? "",
+      /search\/replace apply failed/,
+      "errorMessage surfaces the final apply failure",
+    );
+    // Combined transcript captures both broker responses for human
+    // salvage.
+    assert.match(c?.rawText ?? "", /Attempt 1/);
+    assert.match(c?.rawText ?? "", /Attempt 2/);
+    assert.match(c?.rawText ?? "", /# nope-1/);
+    assert.match(c?.rawText ?? "", /# nope-2/);
+    assert.equal(broker.callLog.length, 2, "broker called twice");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Y): S/R apply succeeds on first attempt → applyAttempts=1, no retry (regression)", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# replaced first try
+>>>>>>> REPLACE
+`,
+  });
+  // No second response queued — if the swarm calls broker twice, the
+  // second call will return "all-attempts-failed" and the candidate
+  // would surface as broker_failed. The assertion below catches that
+  // regression path.
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-y-no-retry-needed",
+        taskDescription: "happy path; no retry",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.ok, true, `unexpected: ${c?.phase} ${c?.errorMessage}`);
+    assert.equal(c?.phase, "collected");
+    assert.equal(c?.applyAttempts, 1);
+    assert.equal(
+      broker.callLog.length,
+      1,
+      "broker must NOT be called twice when first attempt applied",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Y): maxApplyRetries=0 → no retry on apply failure (legacy behavior preserved)", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# never-matches
+=======
+# r
+>>>>>>> REPLACE
+`,
+  });
+  // Second response queued so we can prove the swarm did NOT consume it
+  // (queueRemaining > 0 after the run).
+  broker.enqueue({
+    ok: true,
+    assistantText: `(would-be-retry — must not be sent)`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-y-disable-retry",
+        taskDescription: "retry disabled",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        maxApplyRetries: 0,
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "apply_failed");
+    assert.equal(c?.ok, false);
+    assert.equal(
+      c?.applyAttempts,
+      1,
+      "with retries disabled, applyAttempts stays at 1",
+    );
+    assert.equal(broker.callLog.length, 1, "no retry broker call");
+    assert.equal(
+      broker.queueRemaining(),
+      1,
+      "second queued response must remain unconsumed",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Y): packet with applyAttempts validates against builder-swarm-packet schema", async () => {
+  const { validateBuilderSwarmPacket } = await import("../../schemas.ts");
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# replaced
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-y-schema",
+        taskDescription: "schema check",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.equal(packet.candidates[0]?.applyAttempts, 1);
     const valid = validateBuilderSwarmPacket(packet);
     if (!valid) {
       console.error(JSON.stringify(validateBuilderSwarmPacket.errors, null, 2));

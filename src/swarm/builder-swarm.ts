@@ -80,6 +80,14 @@ export interface CandidatePatch {
     testExitCode?: number;
     ranAt?: string;
   };
+  // Patch Y: number of S/R apply attempts the builder made for this
+  // candidate. Set only on candidates that took the S/R path (applied,
+  // committed, collected via S/R, or apply_failed after exhausting
+  // retries). Undefined for unified-diff path and for candidates that
+  // failed before reaching apply (broker_failed, no_diff_extracted on
+  // first call, scope_rejected). 1 means one-shot success or one-shot
+  // failure with retries disabled; >1 means a retry was triggered.
+  applyAttempts?: number;
 }
 
 export interface BuilderSwarmInput {
@@ -113,6 +121,14 @@ export interface BuilderSwarmInput {
   // undefined → no verification (prior behavior preserved).
   typecheckCommand?: string[] | null;
   testCommand?: string[] | null;
+  // Patch Y: maximum extra broker calls per builder when an S/R apply
+  // fails on a recoverable error (SEARCH text not found / ambiguous /
+  // refusing to clobber). Each retry re-prompts with the original
+  // user message + the previous response + the structured apply error
+  // appended as feedback. Default 1 (one retry). Set to 0 to disable
+  // retry entirely (legacy behavior). Retry covers ONLY the S/R path;
+  // unified-diff apply failures never retry.
+  maxApplyRetries?: number;
   // Test seams.
   loadSkillImpl?: (taskClass: string) => Skill | null;
   loadPromptTemplateImpl?: (skill: Skill) => string;
@@ -215,6 +231,9 @@ export async function runBuilderSwarm(
         ...(input.testCommand !== undefined
           ? { testCommand: input.testCommand }
           : {}),
+        ...(input.maxApplyRetries !== undefined
+          ? { maxApplyRetries: input.maxApplyRetries }
+          : {}),
         ...(input.verifierImpl !== undefined
           ? { verifierImpl: input.verifierImpl }
           : {}),
@@ -272,6 +291,8 @@ interface RunOneBuilderInput {
   // populate candidate.builderVerification.
   typecheckCommand?: string[] | null;
   testCommand?: string[] | null;
+  // Patch Y: retry budget for S/R apply failures (see BuilderSwarmInput).
+  maxApplyRetries?: number;
   verifierImpl?: typeof verifyCandidate;
   now: () => number;
   exec: GitRunner;
@@ -315,7 +336,7 @@ async function runOneBuilder(
     run.worktreePath,
     input.touchList,
   );
-  const filledPrompt = renderPrompt(promptTemplate, {
+  const baseFilledPrompt = renderPrompt(promptTemplate, {
     builderId,
     builderCount: String(input.builderCount),
     taskId: input.taskId,
@@ -326,158 +347,245 @@ async function runOneBuilder(
     touchListFiles,
   });
 
-  let brokerResult;
-  try {
-    brokerResult = await deps.broker.callClass({
-      taskClass: input.taskClass,
-      messages: [{ role: "user", content: filledPrompt }],
-      // Pin to the assigned model when caller specified one. Without this
-      // pass-through, the broker is free to pick the same model for every
-      // builder, defeating the purpose of parallel multi-model attempts.
-      // (GPT Pro review Issue #1.)
-      ...(input.pinnedModelKey !== undefined
-        ? { modelOverride: input.pinnedModelKey }
-        : {}),
-    });
-  } catch (e) {
-    // Patch T: attribute the failure to the pinned model when present.
-    // Symmetric to Patch R blocker #3 for reviewers — without this,
-    // model_event aggregation drops pinned-builder failures (writer's
-    // "if (!c.modelKey) continue;" skips the row), making targeted-
-    // builder failure rates invisible in the scorecard.
-    return failureWithRun(
-      run,
-      "broker_failed",
-      now() - tStart,
-      e,
-      input.pinnedModelKey,
-    );
-  }
-
-  if (!brokerResult.ok || !brokerResult.selected) {
-    return {
-      builderId,
-      ...(input.pinnedModelKey !== undefined
-        ? { modelKey: input.pinnedModelKey }
-        : {}),
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "broker_failed",
-      elapsedMs: now() - tStart,
-      errorMessage: `broker rejected: ${brokerResult.rejected ?? "unknown"}`,
-    };
-  }
-
-  const modelKey = brokerResult.selected.modelKey;
-  const rawText = brokerResult.selectedResponse?.text ?? "";
-
-  // ---- 4. extract changes ----
-  // Patch M: prefer search/replace blocks over unified diff. First-real-
-  // orchestration data showed line-number drift in unified diffs is the
-  // dominant failure mode for general 70B models. S/R sidesteps it by
-  // matching exact text instead of line numbers. If the model emitted
-  // S/R blocks (Aider-style), apply them and synthesize a unified diff
-  // from `git diff` for the scope check + downstream pipeline. If no
-  // S/R blocks are present, fall back to unified-diff extraction (kept
-  // for backwards compat / models that prefer it).
-  const srParse = parseSearchReplaceBlocks(rawText);
-  let diffText: string;
-  // True when changes are ALREADY on disk in the worktree (we wrote
-  // them via search/replace). The unified-diff `git apply` step below
-  // must be skipped in that case — re-applying would fail with
-  // "patch already applied".
+  // Patch Y: retry loop for the broker call + S/R apply.
+  // The model commonly hallucinates SEARCH text on the first attempt
+  // (paraphrases instead of copying verbatim from the rendered touch
+  // list). When the apply rejects it with a structured error, one
+  // re-prompt with that error appended typically produces a clean
+  // apply. The loop ONLY retries on S/R apply failures; broker
+  // failures and scope rejections short-circuit immediately.
+  const maxApplyRetries = input.maxApplyRetries ?? 1;
+  let promptToSend = baseFilledPrompt;
+  let attempt = 0;
+  // Set on first successful broker response and re-set on each retry.
+  let modelKey: string | undefined;
+  let rawText = "";
+  // diffText / alreadyApplied / applyAttempts are populated once the
+  // loop reaches a terminal state (success or unified-diff fall-
+  // through). The post-loop code uses them unchanged from pre-Patch-Y.
+  let diffText: string | undefined;
   let alreadyApplied = false;
-  if (srParse.blocks.length > 0) {
-    // ---- 4.4 PRE-APPLY scope check (Patch R blocker #1) ----
-    // The S/R applier writes to disk during apply. If we deferred the
-    // scope check until after apply (the way the unified-diff path
-    // does), an out-of-scope candidate would mutate the worktree
-    // before being rejected — leaving a dirty tree behind even though
-    // the candidate is reported as scope_rejected. Catch it here on
-    // the parsed block file paths so we never write rejected blocks.
-    if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+  let applyAttempts: number | undefined;
+  // Combined transcript surfaced as rawText on multi-attempt apply
+  // failure — operator/arbiter can salvage from any attempt.
+  const transcript: string[] = [];
+
+  retryLoop: while (true) {
+    attempt++;
+
+    let brokerResult;
+    try {
+      brokerResult = await deps.broker.callClass({
+        taskClass: input.taskClass,
+        messages: [{ role: "user", content: promptToSend }],
+        // Pin to the assigned model when caller specified one. Without
+        // this pass-through, the broker is free to pick the same model
+        // for every builder, defeating the purpose of parallel multi-
+        // model attempts. (GPT Pro review Issue #1.)
+        ...(input.pinnedModelKey !== undefined
+          ? { modelOverride: input.pinnedModelKey }
+          : {}),
+      });
+    } catch (e) {
+      // Patch T: attribute the failure to the pinned model when
+      // present. Symmetric to Patch R blocker #3 for reviewers —
+      // without this, model_event aggregation drops pinned-builder
+      // failures (writer's "if (!c.modelKey) continue;" skips the
+      // row), making targeted-builder failure rates invisible in the
+      // scorecard.
+      if (attempt === 1) {
+        return failureWithRun(
+          run,
+          "broker_failed",
+          now() - tStart,
+          e,
+          input.pinnedModelKey,
+        );
+      }
+      // Patch Y: a retry's broker call exception does not escalate to
+      // broker_failed — the underlying problem was the prior apply
+      // failure. Surface that with a note about the lost retry call.
       return {
         builderId,
-        modelKey,
+        ...(modelKey !== undefined ? { modelKey } : {}),
         runId: run.runId,
         worktreePath: run.worktreePath,
         ok: false,
-        phase: "scope_rejected",
+        phase: "apply_failed",
         elapsedMs: now() - tStart,
-        errorMessage:
-          "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
-        rawText,
-      };
-    }
-    const srScope = checkSearchReplaceScope(srParse.blocks, {
-      touchList: input.touchList,
-    });
-    if (!srScope.allowed) {
-      return {
-        builderId,
-        modelKey,
-        runId: run.runId,
-        worktreePath: run.worktreePath,
-        ok: false,
-        phase: "scope_rejected",
-        elapsedMs: now() - tStart,
-        errorMessage: `S/R scope rejected — ${srScope.reason}`,
-        rawText,
+        errorMessage: `search/replace apply failed on attempt ${attempt - 1}; retry broker call failed: ${e instanceof Error ? e.message : String(e)}`,
+        rawText: transcript.join("\n\n"),
+        applyAttempts: attempt - 1,
       };
     }
 
-    const apply = applySearchReplaceBlocks(run.worktreePath, srParse.blocks);
-    if (!apply.ok) {
+    if (!brokerResult.ok || !brokerResult.selected) {
+      if (attempt === 1) {
+        return {
+          builderId,
+          ...(input.pinnedModelKey !== undefined
+            ? { modelKey: input.pinnedModelKey }
+            : {}),
+          runId: run.runId,
+          worktreePath: run.worktreePath,
+          ok: false,
+          phase: "broker_failed",
+          elapsedMs: now() - tStart,
+          errorMessage: `broker rejected: ${brokerResult.rejected ?? "unknown"}`,
+        };
+      }
       return {
         builderId,
-        modelKey,
+        ...(modelKey !== undefined ? { modelKey } : {}),
         runId: run.runId,
         worktreePath: run.worktreePath,
         ok: false,
         phase: "apply_failed",
         elapsedMs: now() - tStart,
-        errorMessage: `search/replace apply failed: ${apply.error ?? "unknown"}`,
-        rawText,
+        errorMessage: `search/replace apply failed on attempt ${attempt - 1}; retry broker call rejected: ${brokerResult.rejected ?? "unknown"}`,
+        rawText: transcript.join("\n\n"),
+        applyAttempts: attempt - 1,
       };
     }
-    // Synthesize a unified diff from the worktree state. The scope
-    // checker + downstream metadata extraction (file list, sizeBytes,
-    // line counts) consume unified diffs; rather than duplicate that
-    // logic for S/R, generate the canonical form once.
-    const diffRes = exec(["diff", "--no-color"], run.worktreePath);
-    if (!diffRes.ok) {
-      return {
-        builderId,
-        modelKey,
-        runId: run.runId,
-        worktreePath: run.worktreePath,
-        ok: false,
-        phase: "apply_failed",
-        elapsedMs: now() - tStart,
-        errorMessage: `search/replace applied but git diff failed: ${diffRes.stderr.trim() || "unknown"}`,
-        rawText,
-      };
+
+    modelKey = brokerResult.selected.modelKey;
+    rawText = brokerResult.selectedResponse?.text ?? "";
+    transcript.push(`=== Attempt ${attempt} broker response ===\n${rawText}`);
+
+    // ---- 4. extract changes ----
+    // Patch M: prefer search/replace blocks over unified diff. First-
+    // real-orchestration data showed line-number drift in unified
+    // diffs is the dominant failure mode for general 70B models. S/R
+    // sidesteps it by matching exact text instead of line numbers. If
+    // the model emitted S/R blocks (Aider-style), apply them and
+    // synthesize a unified diff from `git diff` for the scope check +
+    // downstream pipeline. If no S/R blocks are present, fall back to
+    // unified-diff extraction (kept for backwards compat / models
+    // that prefer it). Unified-diff path does NOT participate in the
+    // retry loop.
+    const srParse = parseSearchReplaceBlocks(rawText);
+    if (srParse.blocks.length > 0) {
+      // ---- 4.4 PRE-APPLY scope check (Patch R blocker #1) ----
+      // The S/R applier writes to disk during apply. If we deferred
+      // the scope check until after apply (the way the unified-diff
+      // path does), an out-of-scope candidate would mutate the
+      // worktree before being rejected — leaving a dirty tree behind
+      // even though the candidate is reported as scope_rejected.
+      // Catch it here on the parsed block file paths so we never
+      // write rejected blocks. Scope rejection is NOT retried; the
+      // model picked the wrong file, not the wrong text.
+      if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+        return {
+          builderId,
+          modelKey,
+          runId: run.runId,
+          worktreePath: run.worktreePath,
+          ok: false,
+          phase: "scope_rejected",
+          elapsedMs: now() - tStart,
+          errorMessage:
+            "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
+          rawText,
+        };
+      }
+      const srScope = checkSearchReplaceScope(srParse.blocks, {
+        touchList: input.touchList,
+      });
+      if (!srScope.allowed) {
+        return {
+          builderId,
+          modelKey,
+          runId: run.runId,
+          worktreePath: run.worktreePath,
+          ok: false,
+          phase: "scope_rejected",
+          elapsedMs: now() - tStart,
+          errorMessage: `S/R scope rejected — ${srScope.reason}`,
+          rawText,
+        };
+      }
+
+      const apply = applySearchReplaceBlocks(run.worktreePath, srParse.blocks);
+      if (apply.ok) {
+        // Synthesize a unified diff from the worktree state. The scope
+        // checker + downstream metadata extraction (file list,
+        // sizeBytes, line counts) consume unified diffs; rather than
+        // duplicate that logic for S/R, generate the canonical form
+        // once.
+        const diffRes = exec(["diff", "--no-color"], run.worktreePath);
+        if (!diffRes.ok) {
+          return {
+            builderId,
+            modelKey,
+            runId: run.runId,
+            worktreePath: run.worktreePath,
+            ok: false,
+            phase: "apply_failed",
+            elapsedMs: now() - tStart,
+            errorMessage: `search/replace applied but git diff failed: ${diffRes.stderr.trim() || "unknown"}`,
+            rawText,
+            applyAttempts: attempt,
+          };
+        }
+        diffText = diffRes.stdout;
+        if (diffText.trim().length === 0) {
+          // S/R applied but produced an empty diff — model said
+          // "replace X with X" effectively. Treat as no-op rather
+          // than success. Not retried (a syntactically-valid no-op
+          // is not a recoverable failure mode; the model chose to
+          // do nothing).
+          return {
+            builderId,
+            modelKey,
+            runId: run.runId,
+            worktreePath: run.worktreePath,
+            ok: false,
+            phase: "no_diff_extracted",
+            elapsedMs: now() - tStart,
+            errorMessage:
+              "search/replace blocks applied but resulted in zero net changes",
+            rawText,
+            applyAttempts: attempt,
+          };
+        }
+        alreadyApplied = true;
+        applyAttempts = attempt;
+        break retryLoop;
+      }
+
+      // Patch Y: S/R apply failed — retry if budget allows. The
+      // structured error from applySearchReplaceBlocks ("SEARCH text
+      // not found", "matches N locations", etc.) becomes the model-
+      // facing feedback. This is the dominant local-70B failure
+      // mode (model paraphrased a line instead of copying it
+      // verbatim from the rendered touch list).
+      const applyError = apply.error ?? "unknown";
+      transcript.push(`=== Attempt ${attempt} apply error ===\n${applyError}`);
+      if (attempt > maxApplyRetries) {
+        return {
+          builderId,
+          modelKey,
+          runId: run.runId,
+          worktreePath: run.worktreePath,
+          ok: false,
+          phase: "apply_failed",
+          elapsedMs: now() - tStart,
+          errorMessage:
+            attempt > 1
+              ? `search/replace apply failed (after ${attempt} attempts): ${applyError}`
+              : `search/replace apply failed: ${applyError}`,
+          rawText: transcript.join("\n\n"),
+          applyAttempts: attempt,
+        };
+      }
+      promptToSend = buildRetryPrompt(baseFilledPrompt, rawText, applyError);
+      continue retryLoop;
     }
-    diffText = diffRes.stdout;
-    if (diffText.trim().length === 0) {
-      // S/R applied but produced an empty diff — model said "replace
-      // X with X" effectively. Treat as no-op rather than success.
-      return {
-        builderId,
-        modelKey,
-        runId: run.runId,
-        worktreePath: run.worktreePath,
-        ok: false,
-        phase: "no_diff_extracted",
-        elapsedMs: now() - tStart,
-        errorMessage:
-          "search/replace blocks applied but resulted in zero net changes",
-        rawText,
-      };
-    }
-    alreadyApplied = true;
-  } else {
+
+    // No S/R blocks — fall through to unified-diff extraction. Retry
+    // does not apply here; if the model emitted text without diff or
+    // S/R, re-prompting with "previous attempt failed" is unlikely
+    // to elicit a different shape and risks confusing the model.
     const diffs = extractDiffs(rawText);
     if (diffs.length === 0) {
       return {
@@ -494,6 +602,18 @@ async function runOneBuilder(
       };
     }
     diffText = diffs[0]!.diff;
+    break retryLoop;
+  }
+
+  // Loop exited via break — diffText is set; modelKey is set;
+  // applyAttempts is set iff the S/R path completed.
+  if (diffText === undefined || modelKey === undefined) {
+    // Unreachable: every break above sets these. Defensive throw to
+    // turn a future regression into a loud failure rather than a
+    // silent undefined-deref downstream.
+    throw new BuilderSwarmError(
+      `runOneBuilder: invariant violated — loop exited without diffText/modelKey (builderId=${builderId})`,
+    );
   }
 
   // ---- 4.5 scope check (Patch C / GPT Pro Issue #4 + E2 blocker #2) ----
@@ -549,6 +669,8 @@ async function runOneBuilder(
       exec,
     });
     if (!applyOutcome.ok) {
+      // Unified-diff path: applyAttempts intentionally NOT set —
+      // retry only covers the S/R path (Patch Y).
       return {
         builderId,
         modelKey,
@@ -586,6 +708,7 @@ async function runOneBuilder(
       elapsedMs: now() - tStart,
       errorMessage: `applied but commit failed: ${commitOk.message}`,
       rawText,
+      ...(applyAttempts !== undefined ? { applyAttempts } : {}),
     };
   }
 
@@ -606,6 +729,7 @@ async function runOneBuilder(
         "applied + committed but worktreeManager.collect failed: " +
         (e instanceof Error ? e.message : String(e)),
       rawText,
+      ...(applyAttempts !== undefined ? { applyAttempts } : {}),
     };
   }
 
@@ -659,10 +783,39 @@ async function runOneBuilder(
     rawText,
     ...(collected.patch ? { patch: collected.patch } : {}),
     ...(builderVerification !== undefined ? { builderVerification } : {}),
+    ...(applyAttempts !== undefined ? { applyAttempts } : {}),
   };
 }
 
 // --- helpers --------------------------------------------------------------
+
+// Patch Y: build the retry prompt by appending structured feedback
+// (the model's previous response + the apply error) to the original
+// user message. Concatenation rather than diff-only so the model
+// still sees the original task description and rendered touch-list
+// file contents — those are the source of truth the retry must
+// match.
+function buildRetryPrompt(
+  originalPrompt: string,
+  previousResponse: string,
+  applyError: string,
+): string {
+  return [
+    originalPrompt,
+    "",
+    "## PREVIOUS ATTEMPT FAILED",
+    "",
+    "Your previous response was:",
+    "",
+    previousResponse,
+    "",
+    "Applying it produced this error:",
+    "",
+    applyError,
+    "",
+    "Likely cause: the SEARCH text in one of your blocks does not match the file content character-for-character. The runner uses exact-string matching (no fuzzy match, no whitespace normalization), so paraphrased text, altered indentation, or content from an outdated mental model of the file all fail this way. Re-read the current file contents shown above, then emit corrected search/replace blocks. Copy the SEARCH text verbatim from the rendered file content; do NOT paraphrase or reformat.",
+  ].join("\n");
+}
 
 function failure(
   builderId: string,
