@@ -46,7 +46,15 @@ export interface ProviderConfig {
   requestTimeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Default per-call timeout. 180s accommodates local 70B-class models on
+// consumer hardware (qwen2.5:72b on an M-series Mac runs ~30–120s for
+// builder-sized prompts including rubric + scope rules + diff context).
+// 30s was the original NIM-targeted value; killed local inference
+// mid-flight before the model finished generating. The broker's policy
+// has its own `defaults.requestTimeoutMs` field but does NOT currently
+// wire it through to providers — fixing that threading is a tracked
+// follow-up; this default makes the cluster usable until then.
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 export class OpenAICompatibleProvider {
   readonly name: string;

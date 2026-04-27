@@ -176,6 +176,7 @@ export async function runOrchestration(
         reviewerCount,
         taskClass: reviewerTaskClass,
         patchId: candidate.builderId,
+        taskId: input.taskId,
         ...(deps.loadSkillImpl !== undefined
           ? { loadSkillImpl: deps.loadSkillImpl }
           : {}),

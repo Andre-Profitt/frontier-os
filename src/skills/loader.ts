@@ -201,10 +201,35 @@ export function loadSkill(
   return skills.find((s) => s.taskClass === taskClass) ?? null;
 }
 
-// Read the SKILL.md prose body — the prompt template a future runtime
-// interpolates the task description into.
+// Read the SKILL.md and extract ONLY the fenced block under
+// "## Prompt template". The role / success-criteria / anti-patterns
+// prose above is for the human curating the skill, not for the model.
+//
+// First-real-orchestration finding (Patch L, v4): when the whole
+// SKILL.md was sent as the prompt, deepseek-coder:33b-instruct
+// paraphrased the role definition back instead of acting on it
+// (reviewCoverage=0.00 because every reviewer returned narrative text
+// instead of the requested JSON). Sending only the actual template
+// block fixes that — the model sees instructions, not documentation.
+//
+// Falls back to the whole file if the section header / fence pair
+// isn't found, so a hand-authored SKILL.md without the standard
+// structure still works.
 export function loadPromptTemplate(skill: Skill): string {
-  return readFileSync(skill.promptTemplatePath, "utf8");
+  const md = readFileSync(skill.promptTemplatePath, "utf8");
+  const headerIdx = md.indexOf("## Prompt template");
+  if (headerIdx < 0) return md;
+  const after = md.slice(headerIdx);
+  const openFence = after.indexOf("```");
+  if (openFence < 0) return md;
+  const closeFence = after.indexOf("```", openFence + 3);
+  if (closeFence < 0) return md;
+  // Strip the language tag on the open fence (e.g. ```json) and the
+  // surrounding newlines.
+  const inner = after.slice(openFence + 3, closeFence);
+  const firstNewline = inner.indexOf("\n");
+  const body = firstNewline >= 0 ? inner.slice(firstNewline + 1) : inner;
+  return body.replace(/\n+$/, "");
 }
 
 // Tool gate — the function the worker runtime calls to decide whether a
