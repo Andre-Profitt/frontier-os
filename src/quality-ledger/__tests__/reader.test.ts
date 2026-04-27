@@ -119,7 +119,8 @@ test("readLedger: row with wrong kind for the file → callback, row skipped", (
         kind: "arbiter_decision",
         decision: "accept",
         candidatesEvaluated: 1,
-        rerunVerificationOk: true,
+        anyCandidateVerified: true,
+        selectedCandidateVerified: true,
       }) + "\n",
     );
     const malformed: string[] = [];

@@ -116,7 +116,8 @@
         "kind",
         "decision",
         "candidatesEvaluated",
-        "rerunVerificationOk"
+        "anyCandidateVerified",
+        "selectedCandidateVerified"
       ],
       "properties": {
         "kind": { "const": "arbiter_decision" },
@@ -126,7 +127,14 @@
         "selectedBuilderId": { "type": "string" },
         "qualityFloor": { "type": "number", "minimum": 0, "maximum": 1 },
         "candidatesEvaluated": { "type": "integer", "minimum": 0 },
-        "rerunVerificationOk": { "type": "boolean" }
+        "anyCandidateVerified": {
+          "type": "boolean",
+          "description": "True iff at least one candidate's verifier re-run reached phase=passed. Coarse signal — prefer selectedCandidateVerified for routing decisions."
+        },
+        "selectedCandidateVerified": {
+          "type": "boolean",
+          "description": "True iff the candidate the arbiter selected reached phase=passed in the verifier re-run. False when no candidate was selected (e.g. decision=escalate_to_human or decision=reject)."
+        }
       }
     },
     {

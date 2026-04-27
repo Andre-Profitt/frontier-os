@@ -4,7 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { recommendPolicy, type ModelPolicy } from "../policy-recommender.ts";
+import {
+  recommendPolicy,
+  wilsonLowerBound,
+  type ModelPolicy,
+} from "../policy-recommender.ts";
 import type {
   BuilderModelScore,
   ReviewerModelScore,
@@ -297,7 +301,176 @@ test("recommendPolicy: evidence list is sorted by rate descending", () => {
   );
 });
 
+// --- Wilson lower bound math --------------------------------------------
+
+test("wilsonLowerBound: n=0 returns 0", () => {
+  assert.equal(wilsonLowerBound(0.5, 0), 0);
+});
+
+test("wilsonLowerBound: p=0 returns 0", () => {
+  assert.equal(wilsonLowerBound(0, 100), 0);
+});
+
+test("wilsonLowerBound: small-sample p=1 is materially below 1", () => {
+  // 3/3 wins → ~0.44, not 1.0. Pin the small-n penalty.
+  const lb = wilsonLowerBound(1, 3);
+  assert.ok(lb > 0.3 && lb < 0.5, `expected 0.3..0.5, got ${lb}`);
+});
+
+test("wilsonLowerBound: large-sample p collapses toward raw rate", () => {
+  // 950/1000 wins → ~0.94, very close to raw 0.95.
+  const lb = wilsonLowerBound(0.95, 1000);
+  assert.ok(lb > 0.93 && lb < 0.95, `expected 0.93..0.95, got ${lb}`);
+});
+
+test("wilsonLowerBound: monotone — more samples at same rate ⇒ higher lower bound", () => {
+  const lb5 = wilsonLowerBound(0.7, 5);
+  const lb50 = wilsonLowerBound(0.7, 50);
+  const lb500 = wilsonLowerBound(0.7, 500);
+  assert.ok(lb5 < lb50 && lb50 < lb500);
+});
+
+// --- Wilson lower bound (Patch I, fix #3) -------------------------------
+
+// GPT Pro Patch I — fix #3: promotion / demotion now compares Wilson
+// lower bounds, not raw rates. A small-sample lucky streak (3/3 wins)
+// must NOT displace a well-evidenced primary (20/30 wins) even though
+// the raw rates favor the small-sample model.
+test("recommendPolicy: small-sample lucky streak does NOT promote over well-evidenced primary", () => {
+  const policy = policyWith({
+    patch_builder: {
+      models: [
+        { provider: "ollama-local", model: "qwen2.5-coder:14b" }, // primary, well evidenced
+        { provider: "nvidia-nim", model: "lucky-streak" }, // alternate, tiny sample
+      ],
+    },
+  });
+  const scores: ModelScore[] = [
+    builderScore({
+      modelKey: "ollama-local:qwen2.5-coder:14b",
+      orchestrationsParticipated: 30,
+      selectionRate: 20 / 30, // ~0.67
+    }),
+    builderScore({
+      modelKey: "nvidia-nim:lucky-streak",
+      orchestrationsParticipated: 3,
+      selectionRate: 3 / 3, // 1.00 — perfect but on 3 packets
+    }),
+  ];
+  const recs = recommendPolicy(policy, scores, {
+    minSamples: 3,
+    improvementMargin: 0.1,
+  });
+  // Wilson lower bound for 3/3 at 95% ≈ 0.44
+  // Wilson lower bound for 20/30 at 95% ≈ 0.49
+  // Primary's lowerBound is HIGHER → no promotion fires. Silent.
+  assert.equal(recs.length, 0);
+});
+
+test("recommendPolicy: evidence rows expose both rate and lowerBound", () => {
+  const policy = policyWith({
+    patch_builder: {
+      models: [{ provider: "ollama-local", model: "qwen2.5-coder:14b" }],
+    },
+  });
+  const scores: ModelScore[] = [
+    builderScore({
+      modelKey: "ollama-local:qwen2.5-coder:14b",
+      orchestrationsParticipated: 5,
+      selectionRate: 0.4,
+    }),
+    builderScore({
+      modelKey: "nvidia-nim:kimi-k2",
+      orchestrationsParticipated: 5,
+      selectionRate: 0.95,
+    }),
+  ];
+  const recs = recommendPolicy(policy, scores, { minSamples: 3 });
+  const top = recs[0]!.evidence[0]!;
+  assert.equal(top.modelKey, "nvidia-nim:kimi-k2");
+  assert.equal(top.rate, 0.95);
+  // lowerBound should be present, between 0 and rate.
+  assert.ok(typeof top.lowerBound === "number");
+  assert.ok(top.lowerBound > 0);
+  assert.ok(top.lowerBound < top.rate);
+});
+
+test("recommendPolicy: large-sample wins (20/30) DO promote over weak large-sample primary (5/30)", () => {
+  // Sanity check the other direction: when both samples are large,
+  // Wilson collapses toward the raw rate, so genuine differences still
+  // trigger recommendations.
+  const policy = policyWith({
+    patch_builder: {
+      models: [
+        { provider: "ollama-local", model: "weak-primary" },
+        { provider: "nvidia-nim", model: "strong-alt" },
+      ],
+    },
+  });
+  const scores: ModelScore[] = [
+    builderScore({
+      modelKey: "ollama-local:weak-primary",
+      orchestrationsParticipated: 30,
+      selectionRate: 5 / 30,
+    }),
+    builderScore({
+      modelKey: "nvidia-nim:strong-alt",
+      orchestrationsParticipated: 30,
+      selectionRate: 20 / 30,
+    }),
+  ];
+  const recs = recommendPolicy(policy, scores, {
+    minSamples: 3,
+    improvementMargin: 0.1,
+  });
+  assert.equal(recs[0]!.action, "promote_alternate");
+  assert.equal(recs[0]!.recommendedPrimary, "nvidia-nim:strong-alt");
+});
+
 // --- never auto-applies --------------------------------------------------
+
+// GPT Pro Patch I non-blocker: prove the no-auto-apply contract by
+// construction. The recommender module must not import the writer or
+// node:fs (other than nothing — even read access could be ambiguous to
+// future readers about whether it might write). If this test ever
+// fails, someone added a side-effect path; either remove it or split
+// the recommender into its own package.
+test("policy-recommender.ts: no fs import, no writer import (no-auto-apply by construction)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const src = readFileSync(
+    resolve(import.meta.dirname, "..", "policy-recommender.ts"),
+    "utf8",
+  );
+  // Strip comments — we don't want to false-positive on a comment that
+  // mentions "writeFileSync" while explaining why we don't call it.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert.equal(
+    /from\s+["']node:fs["']/.test(code),
+    false,
+    "policy-recommender.ts must not import node:fs",
+  );
+  assert.equal(
+    /from\s+["']\.\/writer\.ts["']/.test(code),
+    false,
+    "policy-recommender.ts must not import the writer",
+  );
+  // Belt-and-suspenders: no write-shaped APIs anywhere (covers indirect
+  // imports — e.g. someone importing fs/promises and calling writeFile).
+  for (const needle of [
+    "writeFileSync",
+    "writeFile(",
+    "appendFileSync",
+    "appendFile(",
+    "createWriteStream",
+  ]) {
+    assert.equal(
+      code.includes(needle),
+      false,
+      `policy-recommender.ts must not call ${needle}`,
+    );
+  }
+});
 
 test("recommendPolicy: input policy object is not mutated", () => {
   // Defensive — a recommender that mutates its input would surprise
