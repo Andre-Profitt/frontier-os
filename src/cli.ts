@@ -3986,6 +3986,91 @@ async function cmdQualityScorecard(
   );
 }
 
+// Q4: model policy recommender. Reads scorecard + current
+// config/model-policy.json; emits recommendations. NEVER writes the
+// policy file — operator reviews and applies by hand.
+async function cmdQualityRecommend(
+  args: ParsedArgs,
+  pretty: boolean,
+): Promise<void> {
+  const policyPath =
+    typeof args.flags.policy === "string"
+      ? args.flags.policy
+      : "config/model-policy.json";
+  const ledgerDir =
+    typeof args.flags["ledger-dir"] === "string"
+      ? args.flags["ledger-dir"]
+      : undefined;
+  const minSamplesArg =
+    typeof args.flags["min-samples"] === "string"
+      ? parseInt(args.flags["min-samples"], 10)
+      : undefined;
+  const marginArg =
+    typeof args.flags.margin === "string"
+      ? parseFloat(args.flags.margin)
+      : undefined;
+  // N2 from Q4 self-review: NaN from a non-numeric flag silently
+  // poisons recommendPolicy (every class becomes no_evidence). Reject
+  // up front so the operator gets an actionable error.
+  if (minSamplesArg !== undefined && !Number.isFinite(minSamplesArg)) {
+    err({
+      error: `--min-samples must be an integer; got "${args.flags["min-samples"]}"`,
+    });
+    return;
+  }
+  if (marginArg !== undefined && !Number.isFinite(marginArg)) {
+    err({
+      error: `--margin must be a number; got "${args.flags.margin}"`,
+    });
+    return;
+  }
+  const { existsSync, readFileSync } = await import("node:fs");
+  if (!existsSync(policyPath)) {
+    err({
+      error: `policy file not found: ${policyPath}; pass --policy <path>`,
+    });
+    return;
+  }
+  let policy: import("./quality-ledger/policy-recommender.ts").ModelPolicy;
+  try {
+    policy = JSON.parse(readFileSync(policyPath, "utf8"));
+  } catch (e) {
+    err({
+      error: `failed to parse policy JSON at ${policyPath}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return;
+  }
+  if (!policy.classes || typeof policy.classes !== "object") {
+    err({
+      error: `policy at ${policyPath} is missing required 'classes' object`,
+    });
+    return;
+  }
+  const { computeModelScores } =
+    await import("./quality-ledger/model-score.ts");
+  const scores = computeModelScores({
+    ...(ledgerDir ? { ledgerDir } : {}),
+  });
+  const { recommendPolicy } =
+    await import("./quality-ledger/policy-recommender.ts");
+  const recommendations = recommendPolicy(policy, scores, {
+    ...(minSamplesArg !== undefined ? { minSamples: minSamplesArg } : {}),
+    ...(marginArg !== undefined ? { improvementMargin: marginArg } : {}),
+  });
+  out(
+    {
+      policyPath,
+      ledgerDir: ledgerDir ?? "default (state/quality-ledger)",
+      minSamples: minSamplesArg ?? 3,
+      improvementMargin: marginArg ?? 0.1,
+      recommendations,
+      // Loud reminder: never auto-apply.
+      note: "Read-only analysis. Apply changes to config/model-policy.json by hand.",
+    },
+    pretty,
+  );
+}
+
 // ---- orchestrate family (PR R6: the loop) ----
 
 async function cmdOrchestrate(
@@ -5150,6 +5235,8 @@ async function main(): Promise<void> {
         return cmdQualityMark(args, pretty);
       case "scorecard":
         return cmdQualityScorecard(args, pretty);
+      case "recommend":
+        return cmdQualityRecommend(args, pretty);
       default:
         return err({
           error: `unknown quality subcommand: ${args.subcommand ?? "(none)"}`,
@@ -5159,6 +5246,7 @@ async function main(): Promise<void> {
             "model-score",
             "mark",
             "scorecard",
+            "recommend",
           ],
         });
     }
