@@ -4086,7 +4086,7 @@ async function cmdOrchestrate(
   if (!taskId || !description) {
     err({
       error:
-        "orchestrate requires --task <id> --description <text> --rubric <path> [--touch a,b] [--builders 3] [--reviewers 3] [--allow-unscoped-diff] [--quality-floor 0.7] [--min-rubric-coverage 0.5] [--min-review-coverage 0.66] [--require-tests] [--anti-examples a,b] [--lane <ctx-lane>] [--cleanup] [--models nim:k1,nim:k2] [--base-branch X]",
+        "orchestrate requires --task <id> --description <text> --rubric <path> [--touch a,b] [--builders 3] [--reviewers 3] [--allow-unscoped-diff] [--quality-floor 0.7] [--min-rubric-coverage 0.5] [--min-review-coverage 0.66] [--require-tests] [--anti-examples a,b] [--lane <ctx-lane>] [--cleanup] [--models nim:k1,nim:k2] [--base-branch X] [--skip-ingest] [--quality-ledger-dir <path>]",
     });
     return;
   }
@@ -4151,6 +4151,25 @@ async function cmdOrchestrate(
     typeof args.flags["base-branch"] === "string"
       ? args.flags["base-branch"]
       : undefined;
+  // Patch J: auto-ingest into the quality ledger after every
+  // orchestration. Default ON because the whole flywheel (Q3
+  // scorecard, Q4 recommend) depends on durable evidence; making
+  // ingest opt-in means operators forget and the ledger stays empty.
+  // --skip-ingest opts out (e.g. when running synthetic / smoke
+  // orchestrations whose data should NOT pollute the routing memory).
+  // accept / reject / escalate all get ingested — see auto-ingest.ts
+  // header for why reject + escalate are signal not failure.
+  //
+  // Flag name note: this command uses --quality-ledger-dir even though
+  // `quality ledger ingest` calls the same option --ledger-dir. The
+  // longer name is deliberate — `frontier orchestrate` already has a
+  // crowded flag namespace and a future Patch could add a different
+  // ledger (e.g. cost-tracking) that wants its own --ledger-dir.
+  const skipQualityIngest = args.flags["skip-ingest"] === true;
+  const qualityLedgerDir =
+    typeof args.flags["quality-ledger-dir"] === "string"
+      ? args.flags["quality-ledger-dir"]
+      : undefined;
 
   const { runOrchestration } = await import("./orchestrate/orchestrator.ts");
   const { InferenceBroker } = await import("./inference/broker.ts");
@@ -4200,7 +4219,24 @@ async function cmdOrchestrate(
       ...(cleanup ? { cleanup } : {}),
     },
   );
-  out(packet, pretty);
+  // Patch J: auto-ingest after a successful orchestration. Skipped on
+  // The helper ingests on accept / reject / escalate (all three are
+  // signal — see auto-ingest.ts header) and traps any ingest failure
+  // so it can't mask the orchestration's primary result. Operator can
+  // always re-ingest by hand:
+  //   frontier quality ledger ingest --artifacts <dir>
+  const { autoIngestOrchestration } =
+    await import("./quality-ledger/auto-ingest.ts");
+  const qualityIngest = autoIngestOrchestration(packet, {
+    skip: skipQualityIngest,
+    ...(qualityLedgerDir ? { ledgerDir: qualityLedgerDir } : {}),
+  });
+  // Spread order: packet first, qualityIngest second. If
+  // OrchestrationPacket ever grows a `qualityIngest` field of its own,
+  // the helper status would clobber it — at which point rename the
+  // CLI field (e.g. `qualityIngestStatus`) rather than reorder the
+  // spread, since downstream consumers may key off the existing name.
+  out({ ...packet, qualityIngest }, pretty);
   process.exit(packet.exitCode);
 }
 
