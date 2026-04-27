@@ -1,9 +1,11 @@
 // Quality ledger writer. Ingests an OrchestrationPacket (and the
 // sub-packets it points to) and emits per-event JSONL rows.
 //
-// Append-only. Never rewrites existing rows. The reader is responsible
-// for de-duping on eventId if a packet is ingested twice (uncommon but
-// possible if an operator runs the CLI again on the same artifacts).
+// Append-only. Never rewrites existing rows. Re-ingesting the same
+// packetId throws QualityLedgerError unless `force: true` is passed —
+// double-ingest silently doubles every downstream aggregate
+// (selectionRate, validityRate, finding counts), so we fail loud at the
+// writer rather than push the burden to the reader.
 //
 // Design choices that matter:
 //   - One row per builder CANDIDATE in worker-runs.jsonl. Excluded
@@ -61,6 +63,11 @@ export interface IngestOptions {
   // Pure-function mode: don't append to disk, just return what would
   // have been written. Used by the dry-run CLI flag and most tests.
   dryRun?: boolean;
+  // Opt-in to re-ingest a packetId that's already in the ledger.
+  // Default false → ingest throws QualityLedgerError on duplicate
+  // packetId so silent double-counting can't poison downstream
+  // aggregates (selectionRate, validityRate, finding counts).
+  force?: boolean;
 }
 
 export interface IngestResult {
@@ -74,9 +81,10 @@ export interface IngestResult {
   events: QualityLedgerEvent[];
 }
 
-// Build the events for one orchestration. Pure function — useful for
-// tests that inspect what would be written without touching the
-// filesystem.
+// Build the events for one orchestration. Validates every event against
+// the quality-ledger JSON Schema before returning — callers can never
+// observe an unvalidated event from this module. Throws
+// QualityLedgerError on the first invalid event (no partial output).
 export function buildEvents(
   input: IngestInput,
   now: () => number = Date.now,
@@ -281,19 +289,9 @@ export function buildEvents(
     });
   }
 
-  return events;
-}
-
-export function ingestOrchestration(
-  input: IngestInput,
-  opts: IngestOptions = {},
-): IngestResult {
-  const ledgerDir = opts.ledgerDir ?? DEFAULT_LEDGER_DIR;
-  const now = opts.now ?? Date.now;
-  const events = buildEvents(input, now);
-
-  // Validate every event before persisting any. A single bad event
-  // poisons the whole ingest — partial writes are worse than none.
+  // Validate every event before returning. Putting this inside
+  // buildEvents (instead of in ingestOrchestration) means callers
+  // cannot bypass schema validation by depending on the pure builder.
   for (const e of events) {
     // Capture identifying fields before validate — Ajv's type guard
     // narrows `e` to never in the !valid branch.
@@ -306,6 +304,29 @@ export function ingestOrchestration(
       );
     }
   }
+
+  return events;
+}
+
+export function ingestOrchestration(
+  input: IngestInput,
+  opts: IngestOptions = {},
+): IngestResult {
+  const ledgerDir = opts.ledgerDir ?? DEFAULT_LEDGER_DIR;
+  const now = opts.now ?? Date.now;
+  const packetId = input.packet.packetId;
+
+  // Fail loud on duplicate ingest. Append-only + double-ingest silently
+  // doubles every aggregate downstream (selectionRate, validityRate,
+  // findings counts) — the operator must opt in via `force`.
+  if (!opts.force && packetAlreadyIngested(ledgerDir, packetId)) {
+    throw new QualityLedgerError(
+      `packet ${packetId} already ingested into ${ledgerDir}; pass force=true (CLI: --force-reingest) to override`,
+      { packetId, ledgerDir },
+    );
+  }
+
+  const events = buildEvents(input, now);
 
   const counts = {
     workerRuns: 0,
@@ -502,6 +523,20 @@ function pathFor(ledgerDir: string, kind: QualityLedgerEvent["kind"]): string {
     case "model_event":
       return resolve(ledgerDir, "model-events.jsonl");
   }
+}
+
+// Has any event for this packetId already been written? worker-runs.jsonl
+// is the cheapest single file to scan because every orchestration writes
+// at least one worker_run row (one per builder candidate). We do a
+// streaming substring scan on the JSON quoted field instead of parsing
+// every line — fast on a 100k-row file and correct because packetId is
+// a JSON string field, not a free-form value.
+function packetAlreadyIngested(ledgerDir: string, packetId: string): boolean {
+  const file = resolve(ledgerDir, "worker-runs.jsonl");
+  if (!existsSync(file)) return false;
+  const needle = `"packetId":${JSON.stringify(packetId)}`;
+  const text = readFileSync(file, "utf8");
+  return text.includes(needle);
 }
 
 // Aggregate the review packet's findings for the candidate's worker_run

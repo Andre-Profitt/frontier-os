@@ -456,15 +456,29 @@ test("ingestOrchestration: writes JSONL files, reader roundtrips", () => {
   });
 });
 
-test("ingestOrchestration: appending the same packet twice doubles row counts", () => {
-  // The writer is append-only; dedup is the reader's responsibility.
-  // This test pins that contract so a future "no-op on duplicate
-  // ingest" behavior is a deliberate decision, not an accident.
+test("ingestOrchestration: re-ingesting same packetId throws (no double-counting)", () => {
+  // Patch H deliberate decision: writer fails loud on duplicate
+  // packetId rather than silently double every downstream aggregate.
   withTempLedger((ledgerDir) => {
     ingestOrchestration(buildSampleInput(), { ledgerDir });
-    ingestOrchestration(buildSampleInput(), { ledgerDir });
+    assert.throws(
+      () => ingestOrchestration(buildSampleInput(), { ledgerDir }),
+      QualityLedgerError,
+    );
+    // First ingest's rows survive; no partial second write.
     const snapshot = readLedger({ ledgerDir });
-    assert.equal(snapshot.workerRuns.length, 2); // 1 candidate × 2 ingests
+    assert.equal(snapshot.workerRuns.length, 1);
+  });
+});
+
+test("ingestOrchestration: force=true allows re-ingest of same packetId", () => {
+  // Escape hatch: operator may re-ingest after manually editing
+  // upstream artifacts. Opt-in only; defaults to safe.
+  withTempLedger((ledgerDir) => {
+    ingestOrchestration(buildSampleInput(), { ledgerDir });
+    ingestOrchestration(buildSampleInput(), { ledgerDir, force: true });
+    const snapshot = readLedger({ ledgerDir });
+    assert.equal(snapshot.workerRuns.length, 2);
   });
 });
 
