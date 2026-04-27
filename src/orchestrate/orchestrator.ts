@@ -69,6 +69,12 @@ export interface OrchestrationDeps {
   // gates set). Production default is loadClassGates which reads
   // config/model-policy.json fresh each call.
   classGatesImpl?: (taskClass: string) => ClassGates | undefined;
+  // Patch P test seam: override the per-class reviewer model lookup.
+  // Returns provider-prefixed modelKeys (e.g. ["nvidia-nim:moonshotai/
+  // kimi-k2-thinking", "ollama-local:qwen2.5:72b"]) for the given
+  // taskClass. Production default reads config/model-policy.json's
+  // class.models[] filtered to providers that are effectively enabled.
+  reviewerModelsImpl?: (taskClass: string) => string[] | undefined;
   now?: () => number;
   // Override the artifacts root (default: <repo>/artifacts/orchestrations).
   artifactsRoot?: string;
@@ -189,6 +195,24 @@ export async function runOrchestration(
   const collectedCandidates = builderPacket.candidates.filter(
     (c) => c.phase === "collected" && c.patch,
   );
+  // Patch P: distribute reviewers across the policy's
+  // adversarial_review.models[] so each reviewer in the swarm hits a
+  // different model. Pre-Patch-P, all reviewers went to the policy
+  // primary, defeating the "diversity matters more than raw quality"
+  // intent. CLI override via input.reviewerModelKeys still wins when
+  // the operator wants to pin specific models.
+  // Resolution order:
+  //   1. input.reviewerModelKeys (CLI override) wins
+  //   2. deps.reviewerModelsImpl (test seam) — if provided, its return
+  //      value is authoritative even when it returns undefined (lets
+  //      tests disable auto-derivation)
+  //   3. loadReviewerModels (real policy lookup)
+  const reviewerModelKeys =
+    input.reviewerModelKeys ??
+    (deps.reviewerModelsImpl !== undefined
+      ? deps.reviewerModelsImpl(reviewerTaskClass)
+      : await loadReviewerModels(reviewerTaskClass));
+
   const reviewPackets: Array<{ builderId: string; packet: ReviewPacket }> = [];
   const reviewPacketPaths: Array<{ builderId: string; path: string }> = [];
   for (const candidate of collectedCandidates) {
@@ -201,6 +225,9 @@ export async function runOrchestration(
         taskClass: reviewerTaskClass,
         patchId: candidate.builderId,
         taskId: input.taskId,
+        ...(reviewerModelKeys && reviewerModelKeys.length > 0
+          ? { reviewerModelKeys }
+          : {}),
         ...(deps.loadSkillImpl !== undefined
           ? { loadSkillImpl: deps.loadSkillImpl }
           : {}),
@@ -436,6 +463,25 @@ async function loadClassGates(
   try {
     const registry = new ModelRegistry();
     return registry.classGates(taskClass);
+  } catch {
+    return undefined;
+  }
+}
+
+// Patch P: load the policy class's effectively-enabled model keys for
+// reviewer distribution. Returns provider-prefixed modelKeys (e.g.
+// "nvidia-nim:moonshotai/kimi-k2-thinking") in policy order, filtered
+// to providers whose auth is resolved. Soft-fails like loadClassGates
+// — a broken policy doesn't kill the run, the swarm just falls back
+// to "all reviewers use the broker's primary."
+async function loadReviewerModels(
+  taskClass: string,
+): Promise<string[] | undefined> {
+  try {
+    const registry = new ModelRegistry();
+    const models = registry.resolveClassModels(taskClass);
+    if (models.length === 0) return undefined;
+    return models.map((m) => `${m.provider}:${m.model}`);
   } catch {
     return undefined;
   }

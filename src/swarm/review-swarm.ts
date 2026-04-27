@@ -109,6 +109,14 @@ export interface ReviewSwarmInput {
   // substitution would otherwise leave the literal `{{taskId}}` in
   // the prompt, which models treat as documentation noise.
   taskId?: string;
+  // Patch P: pin specific models per reviewer for true adversarial
+  // diversity. Distributed round-robin: reviewer i uses
+  // reviewerModelKeys[i % reviewerModelKeys.length]. When undefined,
+  // the broker picks the policy primary for every reviewer (the prior
+  // pre-Patch-P behavior — all reviewers funnel to the same model,
+  // which defeats the policy's "diversity matters more than raw
+  // quality" comment on adversarial_review).
+  reviewerModelKeys?: string[];
   // Test seam: load a Skill instead of going to disk. Default: loadSkill(taskClass).
   loadSkillImpl?: (taskClass: string) => Skill | null;
   // Test seam: load the SKILL.md prose body. Default: loadPromptTemplate(skill).
@@ -163,10 +171,15 @@ export async function runReviewSwarm(
   // Spawn N reviewer calls in parallel. Each gets its own reviewerId; the
   // broker handles per-class concurrency — its semaphore is the truth on
   // how many run at once.
+  const reviewerModelKeys = input.reviewerModelKeys ?? [];
   const reviewerPromises = Array.from({ length: reviewerCount }).map(
     async (_, i): Promise<ReviewerRun> => {
       const reviewerId = `r${i + 1}`;
       const tStart = now();
+      const pinnedModelKey =
+        reviewerModelKeys.length > 0
+          ? reviewerModelKeys[i % reviewerModelKeys.length]
+          : undefined;
       const filledPrompt = renderPrompt(promptTemplate, {
         diff: input.diff,
         reviewerId,
@@ -184,6 +197,9 @@ export async function runReviewSwarm(
         const callRes = await deps.broker.callClass({
           taskClass,
           messages: [{ role: "user", content: filledPrompt }],
+          ...(pinnedModelKey !== undefined
+            ? { modelOverride: pinnedModelKey }
+            : {}),
         });
         const elapsedMs = now() - tStart;
         if (!callRes.ok || !callRes.selected) {

@@ -71,6 +71,10 @@ interface StubResponse {
 class StubBroker implements Pick<InferenceBroker, "callClass"> {
   private queue: Array<StubResponse> = [];
   private modelKey = "stub:model-1";
+  // Patch P regression hook: every callClass invocation pushes its
+  // modelOverride here (or undefined when caller didn't pin). Tests
+  // can read this to assert reviewer round-robin distribution.
+  readonly seenModelOverrides: Array<string | undefined> = [];
 
   enqueue(...responses: Array<StubResponse>): void {
     this.queue.push(...responses);
@@ -81,6 +85,7 @@ class StubBroker implements Pick<InferenceBroker, "callClass"> {
   }
 
   async callClass(_opts: BrokerCallOptions): Promise<BrokerCallResult> {
+    this.seenModelOverrides.push(_opts.modelOverride);
     const next = this.queue.shift();
     if (!next) {
       return {
@@ -235,6 +240,52 @@ test("runReviewSwarm: spawns N reviewers in parallel, aggregates findings", asyn
   assert.equal(packet.totalFindings, 6);
   assert.equal(packet.taskClass, "adversarial_review");
   assert.deepEqual(packet.modelsUsed, ["stub:model-1"]);
+});
+
+// Patch P: reviewerModelKeys distributes round-robin across reviewers.
+// Pre-Patch-P, all reviewers funneled to the broker's primary; this
+// pins the new diversity contract.
+test("runReviewSwarm (Patch P): reviewerModelKeys round-robin per reviewer", async () => {
+  const broker = new StubBroker();
+  for (let i = 0; i < 3; i++) {
+    broker.enqueue({ ok: true, assistantText: deliverable(1, `s${i}`) });
+  }
+  await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline", sizeBytes: 4 },
+      reviewerCount: 3,
+      reviewerModelKeys: ["nim:A", "nim:B"], // 2 keys, 3 reviewers → wrap
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+      now: () => 1_700_000_000_000,
+    },
+  );
+  // r1 → A, r2 → B, r3 → A (wrap)
+  assert.deepEqual(broker.seenModelOverrides, ["nim:A", "nim:B", "nim:A"]);
+});
+
+test("runReviewSwarm (Patch P): no reviewerModelKeys → no modelOverride passed (broker primary)", async () => {
+  // Pin the back-compat path: when caller doesn't list models, every
+  // reviewer call gets `undefined` for modelOverride and the broker
+  // picks the policy primary.
+  const broker = new StubBroker();
+  for (let i = 0; i < 2; i++) {
+    broker.enqueue({ ok: true, assistantText: deliverable(1) });
+  }
+  await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline", sizeBytes: 4 },
+      reviewerCount: 2,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+      now: () => 1_700_000_000_000,
+    },
+  );
+  assert.deepEqual(broker.seenModelOverrides, [undefined, undefined]);
 });
 
 test("runReviewSwarm: one reviewer returning non-JSON does not crash the packet", async () => {
