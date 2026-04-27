@@ -20,10 +20,24 @@ export interface BuilderModelScore {
   collected: number;
   // Of the collected, how many the arbiter selected.
   arbiterSelected: number;
+  // Distinct packetIds this model produced any candidate for. The
+  // arbiter picks at most one candidate per packet, so this is the
+  // honest denominator for "how often did this model win" — see
+  // selectionRate below.
+  orchestrationsParticipated: number;
+  // Distinct packetIds where one of this model's candidates was the
+  // arbiter's pick. arbiterSelected counts candidates; this counts
+  // packets, which is what selectionRate divides by.
+  orchestrationsWon: number;
   // Distribution of phases across all candidates.
   phases: Record<string, number>;
-  // Phase fractions: collectedRate (collected/candidates),
-  // selectionRate (arbiterSelected/collected, 0 if no collected).
+  // Phase fractions:
+  //   collectedRate   = collected / candidates
+  //   selectionRate   = orchestrationsWon / orchestrationsParticipated
+  // selectionRate uses per-packet math (not arbiterSelected/collected)
+  // because the arbiter only picks one per packet — using collected as
+  // the denominator would penalise models that produce more candidates
+  // per packet (their structural ceiling drops below 1.0).
   collectedRate: number;
   selectionRate: number;
   // How often a high-severity bug or contract_violation was raised
@@ -96,6 +110,10 @@ function computeBuilderScores(
     candidates: number;
     collected: number;
     arbiterSelected: number;
+    // packetIds where this model produced any candidate.
+    packetIdsParticipated: Set<string>;
+    // packetIds where this model's candidate was the arbiter's pick.
+    packetIdsWon: Set<string>;
     phases: Record<string, number>;
     highBugFindingsAgainst: number;
     rubricScores: number[];
@@ -114,15 +132,21 @@ function computeBuilderScores(
       candidates: 0,
       collected: 0,
       arbiterSelected: 0,
+      packetIdsParticipated: new Set<string>(),
+      packetIdsWon: new Set<string>(),
       phases: {},
       highBugFindingsAgainst: 0,
       rubricScores: [],
       rubricCoverages: [],
     };
     acc.candidates += 1;
+    acc.packetIdsParticipated.add(wr.packetId);
     acc.phases[wr.phase] = (acc.phases[wr.phase] ?? 0) + 1;
     if (wr.phase === "collected") acc.collected += 1;
-    if (wr.arbiterOutcome === "selected") acc.arbiterSelected += 1;
+    if (wr.arbiterOutcome === "selected") {
+      acc.arbiterSelected += 1;
+      acc.packetIdsWon.add(wr.packetId);
+    }
     if (wr.reviewFindings) {
       // High-impact = high severity + bug or contract_violation. Use
       // worker_run's reviewFindings aggregate (already keyed to the
@@ -144,20 +168,26 @@ function computeBuilderScores(
     accs.set(key, acc);
   }
 
-  return [...accs.values()].map((acc) => ({
-    modelKey: acc.modelKey,
-    role: "builder",
-    taskClass: acc.taskClass,
-    candidates: acc.candidates,
-    collected: acc.collected,
-    arbiterSelected: acc.arbiterSelected,
-    phases: acc.phases,
-    collectedRate: acc.candidates > 0 ? acc.collected / acc.candidates : 0,
-    selectionRate: acc.collected > 0 ? acc.arbiterSelected / acc.collected : 0,
-    highBugFindingsAgainst: acc.highBugFindingsAgainst,
-    meanRubricScore: mean(acc.rubricScores),
-    meanRubricCoverage: mean(acc.rubricCoverages),
-  }));
+  return [...accs.values()].map((acc) => {
+    const participated = acc.packetIdsParticipated.size;
+    const won = acc.packetIdsWon.size;
+    return {
+      modelKey: acc.modelKey,
+      role: "builder",
+      taskClass: acc.taskClass,
+      candidates: acc.candidates,
+      collected: acc.collected,
+      arbiterSelected: acc.arbiterSelected,
+      orchestrationsParticipated: participated,
+      orchestrationsWon: won,
+      phases: acc.phases,
+      collectedRate: acc.candidates > 0 ? acc.collected / acc.candidates : 0,
+      selectionRate: participated > 0 ? won / participated : 0,
+      highBugFindingsAgainst: acc.highBugFindingsAgainst,
+      meanRubricScore: mean(acc.rubricScores),
+      meanRubricCoverage: mean(acc.rubricCoverages),
+    };
+  });
 }
 
 // --- reviewer scoring ----------------------------------------------------

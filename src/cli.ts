@@ -3738,7 +3738,7 @@ async function cmdQualityLedgerIngest(
   if (!artifactsDir) {
     err({
       error:
-        "quality ledger ingest requires --artifacts <path-to-orchestration-dir> [--ledger-dir <path>] [--dry-run]",
+        "quality ledger ingest requires --artifacts <path-to-orchestration-dir> [--ledger-dir <path>] [--dry-run] [--force-reingest]",
     });
     return;
   }
@@ -3747,16 +3747,19 @@ async function cmdQualityLedgerIngest(
       ? args.flags["ledger-dir"]
       : undefined;
   const dryRun = args.flags["dry-run"] === true;
+  const force = args.flags["force-reingest"] === true;
   const { ingestArtifactsDir } = await import("./quality-ledger/writer.ts");
   const result = ingestArtifactsDir(artifactsDir, {
     ...(ledgerDir ? { ledgerDir } : {}),
     dryRun,
+    force,
   });
   out(
     {
       artifactsDir,
       ledgerDir: ledgerDir ?? "default (state/quality-ledger)",
       dryRun,
+      force,
       counts: {
         workerRuns: result.workerRuns,
         reviewFindings: result.reviewFindings,

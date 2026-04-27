@@ -24,11 +24,12 @@ function wr(opts: {
   rubricScore?: number;
   rubricCoverage?: number;
   reviewFindings?: WorkerRunEvent["reviewFindings"];
+  packetId?: string;
 }): WorkerRunEvent {
   const result: WorkerRunEvent = {
     eventId: `e-${opts.workerId}`,
     taskId: "t",
-    packetId: "p",
+    packetId: opts.packetId ?? "p",
     ts: TS,
     kind: "worker_run",
     workerId: opts.workerId,
@@ -120,7 +121,11 @@ function me(opts: {
 
 // --- builder scoring -----------------------------------------------------
 
-test("computeFromSnapshot: builder with all collected → collectedRate=1, selectionRate=selected/collected", () => {
+test("computeFromSnapshot: builder all collected → collectedRate=1, per-packet selectionRate", () => {
+  // Both candidates in the same packetId="p", so this model
+  // participated in 1 orchestration and won it.
+  // selectionRate is per-packet (not per-candidate) because the arbiter
+  // only picks one candidate per packet — see BuilderModelScore docs.
   const scores = computeFromSnapshot({
     workerRuns: [
       wr({
@@ -149,7 +154,81 @@ test("computeFromSnapshot: builder with all collected → collectedRate=1, selec
   assert.equal(k1.collected, 2);
   assert.equal(k1.collectedRate, 1);
   assert.equal(k1.arbiterSelected, 1);
-  assert.equal(k1.selectionRate, 0.5);
+  assert.equal(k1.orchestrationsParticipated, 1);
+  assert.equal(k1.orchestrationsWon, 1);
+  assert.equal(k1.selectionRate, 1);
+});
+
+// Patch H — B1: selectionRate denominator must be packets, not collected
+// candidates. Otherwise a model that produces N candidates per packet
+// has a structural ceiling of 1/N, which conflates "candidates per
+// packet" with "model quality."
+test("computeFromSnapshot: selectionRate is per-packet (not per-candidate)", () => {
+  // Same model produces 3 collected candidates each across 2 packets;
+  // the arbiter picks one of its candidates in BOTH packets.
+  // Per-candidate math would say 2/6 = 0.33. Correct math: 2/2 = 1.0.
+  const scores = computeFromSnapshot({
+    workerRuns: [
+      // packet p1: 3 candidates, b1 wins
+      wr({
+        workerId: "b1",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "selected",
+        packetId: "p1",
+      }),
+      wr({
+        workerId: "b2",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        packetId: "p1",
+      }),
+      wr({
+        workerId: "b3",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        packetId: "p1",
+      }),
+      // packet p2: 3 candidates, b4 wins
+      wr({
+        workerId: "b4",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "selected",
+        packetId: "p2",
+      }),
+      wr({
+        workerId: "b5",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        packetId: "p2",
+      }),
+      wr({
+        workerId: "b6",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        packetId: "p2",
+      }),
+    ],
+    reviewFindings: [],
+    arbiterDecisions: [ad({ decision: "accept" })],
+    modelEvents: [],
+    humanDecisions: [],
+  });
+  const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
+    ModelScore,
+    { role: "builder" }
+  >;
+  assert.equal(k1.candidates, 6);
+  assert.equal(k1.collected, 6);
+  assert.equal(k1.arbiterSelected, 2);
+  assert.equal(k1.orchestrationsParticipated, 2);
+  assert.equal(k1.orchestrationsWon, 2);
+  assert.equal(k1.selectionRate, 1); // not 2/6 = 0.33
 });
 
 test("computeFromSnapshot: builder with mixed phases → phases breakdown + collectedRate", () => {
