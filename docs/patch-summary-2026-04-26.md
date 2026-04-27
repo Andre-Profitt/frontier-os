@@ -2,11 +2,13 @@
 
 **Date:** 2026-04-26
 **Original review brief:** `docs/architecture-review-brief-2026-04-26.md`
-**This document:** what changed in response to GPT's blocking + strongly-recommended items, with file:line citations and test names so the re-review can verify each fix without re-reading the full diff.
+**This document:** what changed in response to GPT's first-pass and second-pass reviews. File:line citations and test names so each pass can verify fixes without re-reading the full diff.
 
-All eight items from GPT Pro's "must-fix before merge" + "strongly recommended before merge" tiers landed across the four-PR stack as four discrete patches. **207/207 tests pass, typecheck clean.**
+**Status:** 222/222 tests pass, typecheck clean. All 8 first-pass items + all 3 second-pass blockers landed.
 
 ## What landed
+
+**First-pass response (Patches A–D):**
 
 ```
 PR #11  044dbd0  Patch A — broker modelOverride + selectedResponse + permgate symlink note
@@ -15,7 +17,15 @@ PR #14  ffe2760  Patch C — builder model pinning + diff-scope gate
 PR #15  25b109e  Patch D — arbiter eligibility hardening
 ```
 
-The patches were rebased onto each other in dependency order (A → B → C → D); each downstream branch was force-pushed after rebase. PR diffs on GitHub show the rebased-then-fixed state.
+**Second-pass response (Patches E1–E3):**
+
+```
+PR #13  925a5c7  Patch E1 — reviewer finding schema validation
+PR #14  b0a2b27  Patch E2 — explicit allowUnscopedDiff (default deny on empty touchList)
+PR #15  f0f578b  Patch E3 — arbiter reject vs escalate (uncertainty-only candidate rescue)
+```
+
+All patches rebased onto each other in dependency order (A → B → E1 → C → E2 → D → E3); each downstream branch force-pushed after rebase. PR diffs on GitHub show the rebased-then-fixed state. Second-pass force-push was clean — no conflicts in the rebase chain.
 
 ## Issue-by-issue map
 
@@ -81,6 +91,27 @@ The builder-swarm stub also captures `modelOverride` per call into a `callLog` s
 | **Total**                                                                        | **163**        | **207**       | **+44**                                                                                                                                             |
 
 No tests skipped, no `todo`. All assertions tightened, none weakened.
+
+## Second-pass response — Patches E1–E3
+
+GPT Pro's second-pass review identified three new false-confidence paths created by the first-pass patches. All three landed as Patch E.
+
+| #      | Issue (GPT's words)                                                                                                                                                                                               | Patch       | Where the fix lives                                                                                                                                                                                                                                                                                                                                                                                     | Pinning test                                                                                                                                                                                                                                               |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **E1** | Reviewer output is not actually schema-validated — `category: "contract violation"` (with space) parsed as valid coverage but never reached the arbiter as a `contract_violation` finding → false-clean recreated | E1 → PR #13 | `src/swarm/review-swarm.ts` — new `isValidFinding()` walks every finding and enum-checks `category` (5-enum), `severity` (3-enum), `claim` (non-empty); ANY bad finding → whole reviewer poisoned (output=null, rawText preserved, invalidReviewerCount++, reviewCoverage drops)                                                                                                                        | `review-swarm.test.ts` "tryParseReviewerOutput: invalid severity → null"; "...: invalid category → null"; "runReviewSwarm: reviewer returning malformed severity → invalidReviewerCount, coverage drops"                                                   |
+| **E2** | Empty touchList silently disables scope checking — caller forgetting touchList silently got pre-Patch-C behavior, making the swarm look scope-controlled when it wasn't                                           | E2 → PR #14 | `src/swarm/builder-swarm.ts` — new `BuilderSwarmInput.allowUnscopedDiff` (default false); enforced at the swarm boundary before `checkDiffScope`. Empty touchList without explicit opt-out → `phase=scope_rejected` with errorMessage citing the gate                                                                                                                                                   | `builder-swarm.test.ts` "empty touchList without allowUnscopedDiff → scope_rejected (default deny)"; "empty touchList WITH allowUnscopedDiff=true → allowed (operator opted out)"; "non-empty touchList ignores allowUnscopedDiff (gate runs as normal)"   |
+| **E3** | Arbiter rejects when it should escalate — one objectively-failing candidate caused the whole run to reject, throwing away viable uncertainty-only candidates                                                      | E3 → PR #15 | `src/arbiter/arbiter.ts:306-348` — pivot from "any objective failure → reject" to "any uncertainty-only candidate → escalate". `uncertaintyOnly = e.verPassed && e.rubricScoreOk && e.antiExampleGateOk && (uncertain on coverage/review/high-sev)`. Reject only when EVERY candidate has at least one objective failure. Escalation question built from `uncertaintyOnly[]` only, not full eligibility | `arbiter.test.ts` "decide (E3): one objective-fail + one uncertainty-only → escalate (not reject)"; "decide (E3): all candidates objective-fail → reject (no uncertainty rescue)"; "decide (E3): mixed — A objective-fail, B passes everything → accept B" |
+
+**Test deltas, second pass:**
+
+| Suite                                       | After Patch D | After Patch E | Δ                                                                                                                                                                                            |
+| ------------------------------------------- | ------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/swarm/__tests__/review-swarm.test.ts`  | 19            | 28            | +9 (E1 schema validation: invalid severity / invalid category / empty claim / missing claim / wrong line type / mixed bad+good / all-valid / e2e drops coverage / regression valid high bug) |
+| `src/swarm/__tests__/builder-swarm.test.ts` | 18            | 20            | +3, replaced 1, updated 3 (E2 explicit opt-in: default deny / explicit allow / non-empty touchList ignores flag; existing e2e tests now pass `touchList` explicitly)                         |
+| `src/arbiter/__tests__/arbiter.test.ts`     | 37            | 41            | +4 (E3 reject-vs-escalate: one obj-fail + one unc-only → escalate / all obj-fail → reject / single high-sev → escalate / one obj-fail + one eligible → accept)                               |
+| **Total stack**                             | **207**       | **222**       | **+15**                                                                                                                                                                                      |
+
+The second-pass patches did not require any first-pass tests to be weakened — only existing tests on the affected lanes were updated to match stricter behavior (e.g. existing builder e2e tests now pass `touchList` explicitly, since the silent-skip path no longer exists).
 
 ## What's still deferred (per original brief, GPT did not push back)
 
