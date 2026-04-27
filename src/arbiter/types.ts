@@ -87,6 +87,10 @@ export interface ArbiterDecision {
   };
   rubricScores: RubricScore[];
   antiExampleMatches: AntiExampleMatch[];
+  // Anti-example paths the caller passed but the arbiter could not load
+  // (file missing / unreadable). Surfaced as a config error so the
+  // operator notices the gate is silently dropped. (Patch G B3.)
+  missingAntiExamplePaths?: string[];
   evidence: string;
   elapsedMs?: number;
 }

@@ -30,6 +30,21 @@ export function renderFinalReport(input: RenderInput): string {
 
   lines.push(`# Orchestration final report — ${packet.taskId}`);
   lines.push("");
+
+  // PATCH G B3: surface anti-example config errors ABOVE the decision
+  // line so an operator skimming the top doesn't conflate "couldn't
+  // load my anti-examples → escalate" with "tied eligible candidates →
+  // escalate." Both are escalations but they need different responses.
+  if (
+    arbiterDecision.missingAntiExamplePaths &&
+    arbiterDecision.missingAntiExamplePaths.length > 0
+  ) {
+    lines.push(
+      `**⚠️ Config error:** ${arbiterDecision.missingAntiExamplePaths.length} anti-example file(s) failed to load — \`${arbiterDecision.missingAntiExamplePaths.join("`, `")}\`. The anti-example gate did not run for the affected paths. Fix paths or re-run with corrected \`--anti-examples\`.`,
+    );
+    lines.push("");
+  }
+
   lines.push(
     `**Decision:** \`${arbiterDecision.decision}\` (exit code ${packet.exitCode}: ${exitLabel})`,
   );

@@ -3778,7 +3778,14 @@ async function cmdOrchestrate(
     typeof args.flags["min-review-coverage"] === "string"
       ? parseFloat(args.flags["min-review-coverage"])
       : undefined;
-  const requireTests = args.flags["require-tests"] === true;
+  // PATCH G B1: --require-tests is the default (matches arbiter
+  // default of requireTests=true). Operator opts out with --skip-tests
+  // which sends BOTH requireTests=false AND testCommand=null so the
+  // verifier reports passed_typecheck_only and the arbiter accepts it.
+  // Pre-Patch-G the --require-tests flag was a no-op and there was no
+  // way from the orchestrate CLI to allow typecheck-only candidates.
+  const skipTests = args.flags["skip-tests"] === true;
+  const requireTests = !skipTests;
   const antiExamplePaths =
     typeof args.flags["anti-examples"] === "string"
       ? args.flags["anti-examples"]
@@ -3804,12 +3811,28 @@ async function cmdOrchestrate(
   const { runOrchestration } = await import("./orchestrate/orchestrator.ts");
   const { InferenceBroker } = await import("./inference/broker.ts");
   const { WorktreeManager } = await import("./builders/worktree-manager.ts");
+  // PATCH G N7: when --lane is set, wire the real context-pack as
+  // contextPackImpl. Pre-Patch-G the CLI parsed --lane but never
+  // passed an impl into deps, so the orchestrator's lane guard
+  // (`input.contextPackLane && deps.contextPackImpl`) was always false
+  // and the flag was a silent no-op.
+  const { generateContextPack, renderMarkdown } =
+    await import("./context/pack.ts");
 
   const broker = new InferenceBroker();
   const worktreeManager = new WorktreeManager();
 
   const packet = await runOrchestration(
-    { broker, worktreeManager },
+    {
+      broker,
+      worktreeManager,
+      ...(contextPackLane
+        ? {
+            contextPackImpl: (lane: string) =>
+              renderMarkdown(generateContextPack({ lane })),
+          }
+        : {}),
+    },
     {
       taskId,
       taskDescription: description,
@@ -3823,7 +3846,11 @@ async function cmdOrchestrate(
       ...(qualityFloor !== undefined ? { qualityFloor } : {}),
       ...(minRubricCoverage !== undefined ? { minRubricCoverage } : {}),
       ...(minReviewCoverage !== undefined ? { minReviewCoverage } : {}),
-      ...(requireTests ? { requireTests } : {}),
+      // Always forward requireTests now (default true, --skip-tests false).
+      requireTests,
+      // When skip-tests is set, also clear testCommand so the verifier
+      // doesn't try to invoke a test command that doesn't exist.
+      ...(skipTests ? { testCommand: null } : {}),
       ...(antiExamplePaths.length > 0 ? { antiExamplePaths } : {}),
       ...(contextPackLane ? { contextPackLane } : {}),
       ...(cleanup ? { cleanup } : {}),

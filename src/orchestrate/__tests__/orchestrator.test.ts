@@ -616,7 +616,12 @@ test("runOrchestration: never invokes any merge / push / launchd path (only read
 
 // --- cleanup flag --------------------------------------------------------
 
-test("runOrchestration: --cleanup removes builder worktrees after arbiter", async () => {
+test("runOrchestration: --cleanup PRESERVES the accepted candidate's worktree (Patch G B2)", async () => {
+  // Pre-Patch-G this deleted the accepted candidate's worktree before
+  // the operator could apply its patch — final report's "apply from
+  // worktree X" instruction would point at a missing directory.
+  // Patch G keeps the selected candidate's worktree and only removes
+  // the others.
   const broker = new StubBroker();
   broker.enqueueFor("patch_builder", { text: builderResponse() });
   broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
@@ -640,7 +645,7 @@ test("runOrchestration: --cleanup removes builder worktrees after arbiter", asyn
         ...COMMON_DEPS_OVERRIDES,
       },
       {
-        taskId: "cleanup",
+        taskId: "cleanup-accept",
         taskDescription: "x",
         builderCount: 1,
         reviewerCount: 1,
@@ -651,13 +656,77 @@ test("runOrchestration: --cleanup removes builder worktrees after arbiter", asyn
         cleanup: true,
       },
     );
-    // Worktree path is recorded but the directory should be gone.
+    // Single candidate accepted → worktree PRESERVED for the operator
+    // to apply the patch.
+    assert.equal(packet.summary?.arbiterDecision, "accept");
     const builderPacket = JSON.parse(
       readFileSync(packet.builderPacketPath, "utf8"),
     );
     const wt = builderPacket.candidates[0]?.worktreePath;
     assert.ok(typeof wt === "string");
-    assert.equal(existsSync(wt), false);
+    assert.equal(existsSync(wt), true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runOrchestration: --cleanup removes NON-selected candidates' worktrees (Patch G B2)", async () => {
+  // With multiple eligible candidates, arbiter escalates and there is
+  // no selectedBuilderId. In that case --cleanup removes everything
+  // (operator has no specific patch to apply). When one is selected,
+  // only the others are removed.
+  const broker = new StubBroker();
+  // Builder b1 collects with valid diff; builder b2 also collects.
+  broker.enqueueFor("patch_builder", {
+    text: builderResponse(),
+    modelKey: "stub:m1",
+  });
+  broker.enqueueFor("patch_builder", {
+    text: builderResponse(),
+    modelKey: "stub:m2",
+  });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const mgr = buildManager(repoRoot);
+    const packet = await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: mgr,
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "cleanup-multi",
+        taskDescription: "x",
+        builderCount: 2,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        qualityFloor: 0.5,
+        cleanup: true,
+      },
+    );
+    // Two eligible → escalate (no selectedBuilderId) → all removed.
+    assert.equal(packet.summary?.arbiterDecision, "escalate_to_human");
+    const builderPacket = JSON.parse(
+      readFileSync(packet.builderPacketPath, "utf8"),
+    );
+    for (const c of builderPacket.candidates) {
+      if (typeof c.worktreePath === "string") {
+        assert.equal(existsSync(c.worktreePath), false);
+      }
+    }
   } finally {
     cleanup();
   }
@@ -859,6 +928,118 @@ test("runOrchestration: exit code matches arbiter decision (0/1/2 = accept/rejec
 });
 
 // --- regression: high-severity reviewer finding routes through correctly --
+
+test("runOrchestration (Patch G B3): missing anti-example surfaces in final report ABOVE the decision line", async () => {
+  // Pre-Patch-G the missing-anti-example escalation was buried in the
+  // arbiter evidence code-fence; an operator skimming the top of the
+  // report could conflate "config error" with "tied eligible candidates."
+  // Patch G adds a top-level Config error block above Decision.
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        ...COMMON_DEPS_OVERRIDES,
+        loadAntiExampleImpl: () => {
+          throw new Error("ENOENT");
+        },
+      },
+      {
+        taskId: "missing-ae",
+        taskDescription: "x",
+        builderCount: 1,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        antiExamplePaths: ["/never/exists.md"],
+        qualityFloor: 0.5,
+      },
+    );
+    // Decision is escalate_to_human due to config error.
+    assert.equal(packet.summary?.arbiterDecision, "escalate_to_human");
+    // The final report renders the config error ABOVE Decision.
+    const report = readFileSync(packet.finalReportPath, "utf8");
+    const configErrorIdx = report.indexOf("⚠️ Config error");
+    const decisionIdx = report.indexOf("**Decision:**");
+    assert.ok(configErrorIdx >= 0, "Config error block missing from report");
+    assert.ok(
+      configErrorIdx < decisionIdx,
+      "Config error block must appear ABOVE Decision (operator-readability)",
+    );
+    assert.match(report, /never\/exists\.md/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runOrchestration (Patch G N7): --lane wires real generateContextPack via deps", async () => {
+  // Pre-Patch-G the CLI parsed --lane but never wired contextPackImpl,
+  // so the orchestrator's lane guard fell through and the flag was a
+  // silent no-op. This test pins that the orchestrator USES whatever
+  // contextPackImpl the caller passes; the CLI fix is verified by
+  // composition (the CLI now imports generateContextPack and forwards
+  // a wrapper).
+  const broker = new StubBroker();
+  broker.enqueueFor("patch_builder", { text: builderResponse() });
+  broker.setDefaultFor("adversarial_review", { text: reviewerClean() });
+
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    let laneSeen: string | undefined;
+    const packet = await runOrchestration(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+        artifactsRoot: resolve(repoRoot, "artifacts"),
+        verifierImpl: ({ builderId }) => ({
+          builderId,
+          worktreePath: `/tmp/${builderId}`,
+          phase: "passed" as const,
+          typecheckExitCode: 0,
+          testExitCode: 0,
+          ranAt: "2026-04-26T22:00:00.000Z",
+        }),
+        contextPackImpl: (lane) => {
+          laneSeen = lane;
+          return `# generated for ${lane}\n`;
+        },
+        ...COMMON_DEPS_OVERRIDES,
+      },
+      {
+        taskId: "lane-wired",
+        taskDescription: "x",
+        builderCount: 1,
+        reviewerCount: 1,
+        baseBranch: "main",
+        touchList: ["added.ts"],
+        rubricPath: "/x.json",
+        contextPackLane: "test-lane-name",
+        qualityFloor: 0.5,
+      },
+    );
+    assert.equal(laneSeen, "test-lane-name");
+    assert.ok(packet.contextPackPath);
+    const md = readFileSync(packet.contextPackPath!, "utf8");
+    assert.match(md, /generated for test-lane-name/);
+  } finally {
+    cleanup();
+  }
+});
 
 test("runOrchestration: high-severity reviewer finding makes arbiter escalate (not accept)", async () => {
   const broker = new StubBroker();
