@@ -550,11 +550,31 @@ test("ingestOrchestration: re-ingesting same packetId throws (no double-counting
 test("ingestOrchestration: force=true allows re-ingest of same packetId", () => {
   // Escape hatch: operator may re-ingest after manually editing
   // upstream artifacts. Opt-in only; defaults to safe.
+  // Patch R note: with reader-side dedup-by-eventId, identical inputs
+  // produce identical eventIds → reader collapses to ONE row even
+  // after a force re-ingest. The manifest still records both
+  // ingests, proving the writer didn't throw.
   withTempLedger((ledgerDir) => {
     ingestOrchestration(buildSampleInput(), { ledgerDir });
     ingestOrchestration(buildSampleInput(), { ledgerDir, force: true });
+    const manifestLines = readFileSync(
+      resolve(ledgerDir, "packets-index.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const completes = manifestLines.filter(
+      (r: { status: string }) => r.status === "complete",
+    );
+    assert.equal(
+      completes.length,
+      2,
+      "manifest must record both ingests as complete",
+    );
+    // Reader dedupes byte-identical events from the duplicate write.
     const snapshot = readLedger({ ledgerDir });
-    assert.equal(snapshot.workerRuns.length, 2);
+    assert.equal(snapshot.workerRuns.length, 1);
   });
 });
 
@@ -638,11 +658,17 @@ test("ingestOrchestration: writes packets-index.jsonl on first ingest", () => {
     ingestOrchestration(buildSampleInput(), { ledgerDir });
     const indexPath = resolve(ledgerDir, "packets-index.jsonl");
     assert.equal(existsSync(indexPath), true);
-    const text = readFileSync(indexPath, "utf8").trim();
-    const row = JSON.parse(text);
-    assert.equal(row.packetId, "orch-test-1");
-    assert.equal(row.taskId, "task-1");
-    assert.equal(typeof row.ingestedAt, "string");
+    const lines = readFileSync(indexPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    // Patch R: two manifest rows per ingest (in_progress, complete).
+    assert.equal(lines.length, 2);
+    for (const row of lines) {
+      assert.equal(row.packetId, "orch-test-1");
+      assert.equal(row.taskId, "task-1");
+      assert.equal(typeof row.ingestedAt, "string");
+    }
   });
 });
 
@@ -742,14 +768,26 @@ test("ingestOrchestration dryRun=false: NEW packet on pre-Patch-I ledger DOES ba
     const input = buildSampleInput();
     ingestOrchestration(input, { ledgerDir });
     // Backfill ran (manifest now exists, contains both old + new packets).
+    // Patch R: backfilled row carries status="complete"; new ingest
+    // adds in_progress + complete rows.
     const indexPath = resolve(ledgerDir, "packets-index.jsonl");
     assert.equal(existsSync(indexPath), true);
     const lines = readFileSync(indexPath, "utf8")
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));
-    const ids = lines.map((r: { packetId: string }) => r.packetId).sort();
+    const ids = Array.from(
+      new Set(lines.map((r: { packetId: string }) => r.packetId)),
+    ).sort();
     assert.deepEqual(ids, ["old-packet-1", "orch-test-1"]);
+    // New packet's ingest produced both in_progress and complete rows.
+    const newPacketRows = lines.filter(
+      (r: { packetId: string }) => r.packetId === "orch-test-1",
+    );
+    const statuses = newPacketRows
+      .map((r: { status?: string }) => r.status)
+      .sort();
+    assert.deepEqual(statuses, ["complete", "in_progress"]);
   });
 });
 
@@ -774,6 +812,165 @@ test("ingestOrchestration dryRun=true: ZERO disk mutation — no manifest, no ev
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
+});
+
+// --- Patch R blocker #4: ingest transaction integrity --------------------
+//
+// GPT Pro flagged: the manifest is written LAST, so a process crash
+// between event-row writes and the manifest row leaves event JSONL
+// content on disk for a packet that has no manifest entry. Re-ingest
+// passes the dedup check (no manifest row), appends events again →
+// downstream aggregates double-count the partial-crash events.
+//
+// Fix: write an "in_progress" manifest row BEFORE event writes, and a
+// "complete" row AFTER. Dedup treats only "complete" packetIds as
+// already-ingested, so a crashed-mid-ingest packet is retryable.
+// Reader dedupes by eventId so the duplicated event rows from the
+// retry don't double-count in scorecards. Legacy manifest rows
+// without `status` are treated as "complete" (backwards compat).
+
+test("ingestOrchestration: writes in_progress row BEFORE events, complete row AFTER (Patch R)", () => {
+  withTempLedger((ledgerDir) => {
+    ingestOrchestration(buildSampleInput(), { ledgerDir });
+    const indexPath = resolve(ledgerDir, "packets-index.jsonl");
+    const lines = readFileSync(indexPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    // Two rows per ingest: in_progress, complete (in that order).
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].packetId, "orch-test-1");
+    assert.equal(lines[0].status, "in_progress");
+    assert.equal(lines[1].packetId, "orch-test-1");
+    assert.equal(lines[1].status, "complete");
+  });
+});
+
+test("ingestOrchestration: only-in_progress manifest row (crash-replay) is retryable, NOT a dedup hit (Patch R)", () => {
+  withTempLedger((ledgerDir) => {
+    // Simulate a process crash mid-ingest: in_progress row written,
+    // some event rows written, then crash (no complete row).
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(
+      resolve(ledgerDir, "packets-index.jsonl"),
+      JSON.stringify({
+        packetId: "orch-test-1",
+        taskId: "task-1",
+        ts: "2026-04-26T22:00:00.000Z",
+        ingestedAt: "2026-04-26T22:00:01.000Z",
+        status: "in_progress",
+      }) + "\n",
+    );
+    // Partial event row from the crashed run.
+    writeFileSync(
+      resolve(ledgerDir, "worker-runs.jsonl"),
+      JSON.stringify({
+        eventId: "orch-test-1-wr-0",
+        taskId: "task-1",
+        packetId: "orch-test-1",
+        ts: "2026-04-26T22:00:00.000Z",
+        kind: "worker_run",
+        workerId: "b1",
+        role: "builder",
+        modelKey: "nim:k1",
+        taskClass: "patch_builder",
+        phase: "collected",
+        ok: true,
+        arbiterOutcome: "selected",
+      }) + "\n",
+    );
+
+    // Re-ingest the same packet — must NOT throw on dedup, because
+    // the previous attempt never completed.
+    assert.doesNotThrow(() =>
+      ingestOrchestration(buildSampleInput(), { ledgerDir }),
+    );
+
+    // After the retry, the manifest has the crash's in_progress row
+    // PLUS a fresh in_progress + complete pair.
+    const lines = readFileSync(
+      resolve(ledgerDir, "packets-index.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    const completeForPacket = lines.filter(
+      (r: { packetId: string; status: string }) =>
+        r.packetId === "orch-test-1" && r.status === "complete",
+    );
+    assert.equal(completeForPacket.length, 1);
+  });
+});
+
+test("ingestOrchestration: completed packet still throws on re-ingest (regression check, Patch R)", () => {
+  // Pre-Patch-R: ANY manifest row blocked re-ingest. Post-fix: only
+  // a "complete" row blocks. This test pins the post-fix dedup against
+  // a fully-ingested packet.
+  withTempLedger((ledgerDir) => {
+    ingestOrchestration(buildSampleInput(), { ledgerDir });
+    assert.throws(
+      () => ingestOrchestration(buildSampleInput(), { ledgerDir }),
+      QualityLedgerError,
+    );
+  });
+});
+
+test("ingestOrchestration: legacy manifest row without `status` field counts as complete (backwards compat, Patch R)", () => {
+  withTempLedger((ledgerDir) => {
+    // Pre-Patch-R manifest row — no `status` field. Reader must treat
+    // these as fully ingested so existing ledger directories don't
+    // suddenly accept duplicate ingests.
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(
+      resolve(ledgerDir, "packets-index.jsonl"),
+      JSON.stringify({
+        packetId: "orch-test-1",
+        taskId: "task-1",
+        ts: "2026-04-26T22:00:00.000Z",
+        ingestedAt: "2026-04-26T22:00:01.000Z",
+      }) + "\n",
+    );
+    assert.throws(
+      () => ingestOrchestration(buildSampleInput(), { ledgerDir }),
+      QualityLedgerError,
+    );
+  });
+});
+
+test("readLedger: dedupes event rows by eventId across crash-replay duplicates (Patch R)", async () => {
+  // After a crash + retry, the same eventId may appear twice in the
+  // worker-runs.jsonl (once from the crashed attempt, once from the
+  // successful retry). The reader must collapse these so model_event
+  // aggregates don't double-count partial-crash rows.
+  withTempLedger((ledgerDir) => {
+    mkdirSync(ledgerDir, { recursive: true });
+    const row = {
+      eventId: "orch-1-wr-0",
+      taskId: "task-1",
+      packetId: "orch-1",
+      ts: "2026-04-26T22:00:00.000Z",
+      kind: "worker_run",
+      workerId: "b1",
+      role: "builder",
+      modelKey: "nim:k1",
+      taskClass: "patch_builder",
+      phase: "collected",
+      ok: true,
+      arbiterOutcome: "selected",
+    };
+    // Same row appended twice — simulates partial-crash + complete-retry.
+    writeFileSync(
+      resolve(ledgerDir, "worker-runs.jsonl"),
+      JSON.stringify(row) + "\n" + JSON.stringify(row) + "\n",
+    );
+    const snapshot = readLedger({ ledgerDir });
+    assert.equal(
+      snapshot.workerRuns.length,
+      1,
+      "duplicate eventIds must be collapsed on read",
+    );
+  });
 });
 
 // GPT Pro Patch I — fix #2: ingestArtifactsDir used to silently skip a

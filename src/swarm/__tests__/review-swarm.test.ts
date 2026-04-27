@@ -333,6 +333,117 @@ test("runReviewSwarm: broker rejection surfaces as ok=false reviewer", async () 
   assert.match(failed?.errorMessage ?? "", /broker rejected/);
 });
 
+// --- Patch R blocker #3: pinned reviewer modelKey on failure ----
+
+test("runReviewSwarm (Patch R): pinned reviewer + broker rejection → modelKey=pinnedModelKey on failed run", async () => {
+  // Pin the contract: when reviewerModelKeys is set, the round-robin
+  // model assignment must survive even when the broker call fails.
+  // Without this, model_event aggregation in the quality ledger loses
+  // the pinned-reviewer failure signal — failure rates for the
+  // intentionally-targeted model become invisible.
+  // Note: reviewers run via Promise.all and call broker.callClass in
+  // map-index order synchronously. Queue order is FIFO. Enqueue ok:false
+  // FIRST so reviewer 1 (modelKey nim:A) gets the rejection.
+  const broker = new StubBroker();
+  broker.enqueue({ ok: false }); // reviewer 1 → broker returns ok=false
+  broker.enqueue({ ok: true, assistantText: deliverable(1) }); // reviewer 2 → ok
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 2,
+      reviewerModelKeys: ["nim:A", "nim:B"],
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  const failed = packet.reviewers.find((r) => !r.ok);
+  assert.ok(failed, "expected one failed reviewer");
+  assert.equal(
+    failed?.modelKey,
+    "nim:A",
+    "failed pinned reviewer must carry its assigned modelKey for ledger attribution",
+  );
+});
+
+test("runReviewSwarm (Patch R): pinned reviewer + broker exception → modelKey=pinnedModelKey on failed run", async () => {
+  // Same contract for the exception path (callClass throws). Use a
+  // broker that throws on the first call and succeeds on the second.
+  class ThrowingBroker {
+    private calls = 0;
+    async callClass(opts: BrokerCallOptions): Promise<BrokerCallResult> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        throw new Error("network down");
+      }
+      const record: AttemptRecord = {
+        modelKey: opts.modelOverride ?? "stub:default",
+        provider: "stub",
+        model: "model-1",
+        attemptNumber: 1,
+        bucketGranted: true,
+        bucketWaitedMs: 0,
+        status: 200,
+        ok: true,
+        durationMs: 5,
+        retryAfterMs: null,
+      };
+      return {
+        ok: true,
+        taskClass: opts.taskClass,
+        attempts: [record],
+        selected: record,
+        selectedResponse: { text: deliverable(1), rawBody: null },
+        totalDurationMs: 5,
+        rejected: null,
+      };
+    }
+  }
+  const broker = new ThrowingBroker();
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 2,
+      reviewerModelKeys: ["nim:A", "nim:B"],
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  const failed = packet.reviewers.find((r) => !r.ok);
+  assert.ok(failed, "expected one failed reviewer");
+  assert.equal(
+    failed?.modelKey,
+    "nim:A",
+    "failed pinned reviewer (exception path) must carry its assigned modelKey",
+  );
+  assert.match(failed?.errorMessage ?? "", /network down/);
+});
+
+test("runReviewSwarm (Patch R): unpinned reviewer + broker rejection → modelKey undefined (no regression)", async () => {
+  // Non-regression: when no reviewerModelKeys is set, failed reviewers
+  // still leave modelKey undefined. The fix only attributes failures
+  // to the *known* pinned key — it must NOT invent a key for unpinned
+  // calls.
+  const broker = new StubBroker();
+  broker.enqueue(); // ok=false
+  const packet = await runReviewSwarm(
+    { broker: broker as unknown as InferenceBroker },
+    {
+      diff: "DIFF",
+      diffSource: { kind: "inline" },
+      reviewerCount: 1,
+      loadSkillImpl: () => syntheticSkill(),
+      loadPromptTemplateImpl: () => TEMPLATE,
+    },
+  );
+  const failed = packet.reviewers[0];
+  assert.equal(failed?.ok, false);
+  assert.equal(failed?.modelKey, undefined);
+});
+
 test("runReviewSwarm: reviewerCount < 1 throws", async () => {
   const broker = new StubBroker();
   await assert.rejects(

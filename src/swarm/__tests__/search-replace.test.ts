@@ -396,3 +396,104 @@ test("apply (regression): unused fs imports tolerated when test seams override",
   // Pin the contract that test-mode never touches the fs.
   void existsSync;
 });
+
+// Patch R blocker #1 (parser hardening): SEARCH content containing
+// literal `=======` lines must not split the block early. The fix is
+// to find the LAST separator BEFORE the next REPLACE, not the first
+// separator after SEARCH. Without this, a model legitimately replacing
+// a docstring/banner that contains a row of equals signs gets a
+// mangled block where the parser treats the in-content `=======` as
+// the SEARCH/REPLACE separator.
+test("parse: SEARCH content with literal '=======' line parses with last separator before REPLACE", () => {
+  const text = `src/foo.ts
+<<<<<<< SEARCH
+const banner = \`
+=======
+this is a banner
+=======
+\`;
+=======
+const banner = "new value";
+>>>>>>> REPLACE
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(
+    r.warnings.length,
+    0,
+    `unexpected warnings: ${r.warnings.join(" | ")}`,
+  );
+  assert.equal(r.blocks.length, 1);
+  assert.equal(r.blocks[0]?.filePath, "src/foo.ts");
+  // The full multi-line SEARCH including its embedded `=======` lines
+  // must be preserved — the LAST `=======` before REPLACE is the real
+  // separator.
+  assert.equal(
+    r.blocks[0]?.search,
+    "const banner = `\n=======\nthis is a banner\n=======\n`;",
+  );
+  assert.equal(r.blocks[0]?.replace, 'const banner = "new value";');
+});
+
+test("parse + apply: block with '=======' inside SEARCH applies to a file with the same content", () => {
+  // End-to-end pin: parser produces correct search text → apply finds
+  // it once → file written with replacement.
+  withTempWorktree((root) => {
+    const original =
+      "before\nconst banner = `\n=======\nthis is a banner\n=======\n`;\nafter\n";
+    seedFile(root, "src/foo.ts", original);
+    const text = `src/foo.ts
+<<<<<<< SEARCH
+const banner = \`
+=======
+this is a banner
+=======
+\`;
+=======
+const banner = "new value";
+>>>>>>> REPLACE
+`;
+    const parsed = parseSearchReplaceBlocks(text);
+    assert.equal(parsed.blocks.length, 1);
+    const r = applySearchReplaceBlocks(root, parsed.blocks);
+    assert.equal(r.ok, true, `apply failed: ${r.error ?? "n/a"}`);
+    assert.equal(
+      readFileSync(resolve(root, "src/foo.ts"), "utf8"),
+      'before\nconst banner = "new value";\nafter\n',
+    );
+  });
+});
+
+test("parse: two blocks where first has '=======' inside SEARCH, second is normal", () => {
+  // Cross-block pin: the LAST-sep-before-REPLACE rule applied per-block
+  // must NOT bleed into adjacent blocks. Block 2's separator is its own.
+  const text = `src/a.ts
+<<<<<<< SEARCH
+banner
+=======
+inner
+=======
+end
+=======
+banner replacement
+>>>>>>> REPLACE
+
+src/b.ts
+<<<<<<< SEARCH
+hello
+=======
+world
+>>>>>>> REPLACE
+`;
+  const r = parseSearchReplaceBlocks(text);
+  assert.equal(
+    r.warnings.length,
+    0,
+    `unexpected warnings: ${r.warnings.join(" | ")}`,
+  );
+  assert.equal(r.blocks.length, 2);
+  assert.equal(r.blocks[0]?.search, "banner\n=======\ninner\n=======\nend");
+  assert.equal(r.blocks[0]?.replace, "banner replacement");
+  assert.equal(r.blocks[1]?.filePath, "src/b.ts");
+  assert.equal(r.blocks[1]?.search, "hello");
+  assert.equal(r.blocks[1]?.replace, "world");
+});

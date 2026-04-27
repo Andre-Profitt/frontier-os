@@ -363,23 +363,33 @@ export function ingestOrchestration(
   const appendedAt = new Date(now()).toISOString();
   if (!opts.dryRun) {
     mkdirSync(ledgerDir, { recursive: true });
-    for (const e of events) {
-      const file = pathFor(ledgerDir, e.kind);
-      appendFileSync(file, JSON.stringify(e) + "\n");
-    }
-    // Manifest row last so a crash mid-ingest leaves the manifest
-    // consistent with what's actually on disk (events first, then
-    // mark "this packet is ingested"). On re-run after such a crash,
-    // dedup will let the packet through and the events for it will be
-    // duplicated — accept that vs. risk a phantom dedup hit on a packet
-    // whose events aren't actually persisted.
+    // Patch R blocker #4: write transaction begin marker BEFORE event
+    // rows. If the process crashes mid-ingest, the manifest will have
+    // an in_progress row but no complete row → dedup detects the
+    // packet as retryable instead of treating partial events as a
+    // permanent ingest. Reader-side dedup-by-eventId then collapses
+    // the partial-crash rows when the retry replays them.
     appendPacketIndexRow(
       ledgerDir,
       input.packet.packetId,
       input.packet.taskId,
-      // OrchestrationPacket has scannedAt; use it as the canonical ts.
       input.packet.scannedAt,
       appendedAt,
+      "in_progress",
+    );
+    for (const e of events) {
+      const file = pathFor(ledgerDir, e.kind);
+      appendFileSync(file, JSON.stringify(e) + "\n");
+    }
+    // Transaction complete: now and only now is the packet considered
+    // fully ingested for dedup purposes.
+    appendPacketIndexRow(
+      ledgerDir,
+      input.packet.packetId,
+      input.packet.taskId,
+      input.packet.scannedAt,
+      new Date(now()).toISOString(),
+      "complete",
     );
   }
 
@@ -618,6 +628,13 @@ interface PacketIndexRow {
   taskId: string;
   ts: string;
   ingestedAt: string;
+  // Patch R blocker #4: transaction status. "in_progress" is written
+  // BEFORE event JSONL writes; "complete" AFTER. Reader treats a
+  // packetId as fully ingested only when a "complete" row exists, so
+  // a process crash mid-ingest leaves the packet retryable rather
+  // than creating a phantom dedup hit on partial events. Legacy rows
+  // without `status` are treated as "complete" for backwards compat.
+  status?: "in_progress" | "complete";
 }
 
 function packetIndexPath(ledgerDir: string): string {
@@ -631,6 +648,13 @@ function readPacketIndex(
   const backfill = opts.backfill ?? true;
   const indexFile = packetIndexPath(ledgerDir);
   if (existsSync(indexFile)) {
+    // Patch R blocker #4: only "complete" rows count as already
+    // ingested. Rows with status=undefined are legacy (pre-Patch-R
+    // writer or backfilled rows) — treat as complete to preserve
+    // dedup against existing ledger directories. Rows with
+    // status="in_progress" mean a crash happened mid-ingest; the
+    // packet is RETRYABLE so we deliberately do NOT add it to the
+    // set.
     const set = new Set<string>();
     const text = readFileSync(indexFile, "utf8");
     for (const line of text.split("\n")) {
@@ -638,7 +662,9 @@ function readPacketIndex(
       if (trimmed.length === 0) continue;
       try {
         const row = JSON.parse(trimmed) as PacketIndexRow;
-        if (typeof row.packetId === "string") set.add(row.packetId);
+        if (typeof row.packetId !== "string") continue;
+        const status = row.status ?? "complete";
+        if (status === "complete") set.add(row.packetId);
       } catch {
         // Malformed manifest line — skip (writer never produces these,
         // but operator hand-edits could corrupt). The ingest path
@@ -672,6 +698,10 @@ function readPacketIndex(
         taskId: typeof row.taskId === "string" ? row.taskId : "",
         ts: typeof row.ts === "string" ? row.ts : "",
         ingestedAt: "backfill",
+        // Backfilled rows represent already-persisted events from a
+        // pre-Patch-R writer — record them as complete so dedup
+        // continues to fire on these existing packetIds.
+        status: "complete",
       });
     } catch {
       // Skip malformed worker_run line (reader has the same tolerance).
@@ -701,8 +731,9 @@ function appendPacketIndexRow(
   taskId: string,
   ts: string,
   ingestedAt: string,
+  status: "in_progress" | "complete",
 ): void {
-  const row: PacketIndexRow = { packetId, taskId, ts, ingestedAt };
+  const row: PacketIndexRow = { packetId, taskId, ts, ingestedAt, status };
   appendFileSync(packetIndexPath(ledgerDir), JSON.stringify(row) + "\n");
 }
 

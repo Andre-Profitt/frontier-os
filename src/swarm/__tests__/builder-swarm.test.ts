@@ -3,7 +3,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -859,6 +865,157 @@ test("runBuilderSwarm: non-empty touchList ignores allowUnscopedDiff (gate runs 
       packet.candidates[0]?.errorMessage ?? "",
       /outside_touch_list/,
     );
+  } finally {
+    cleanup();
+  }
+});
+
+// --- Patch R blocker #1: S/R pre-scope check (no worktree mutation) ----
+
+test("runBuilderSwarm: out-of-scope S/R block → scope_rejected BEFORE apply (worktree NOT mutated)", async () => {
+  // Pin the contract: a search/replace block whose filePath is outside
+  // the touchList must be rejected BEFORE applySearchReplaceBlocks
+  // mutates the worktree. Pre-Patch-R the apply ran first, then the
+  // diff-scope check rejected — leaving evil.ts on disk in the
+  // worktree. We assert worktree state explicitly.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `Here's the change:
+
+evil.ts
+<<<<<<< SEARCH
+=======
+malicious payload
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "sr-scope",
+        taskDescription: "model targets out-of-scope file via S/R",
+        touchList: ["allowed.ts"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "scope_rejected");
+    assert.equal(c?.ok, false);
+    assert.match(
+      c?.errorMessage ?? "",
+      /S\/R scope rejected|outside_touch_list/,
+    );
+    // The whole point of this fix: the worktree must be clean. Pre-fix,
+    // applySearchReplaceBlocks would have created evil.ts before the
+    // scope check ran.
+    assert.ok(c?.worktreePath, "expected worktreePath on candidate");
+    assert.equal(
+      existsSync(resolve(c!.worktreePath!, "evil.ts")),
+      false,
+      "evil.ts must NOT exist — apply should not have run before scope check",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: S/R + empty touchList + no allowUnscopedDiff → scope_rejected (worktree clean)", async () => {
+  // Parallel to the unified-diff "default deny" test, for the S/R path.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `Here's the change:
+
+added.ts
+<<<<<<< SEARCH
+=======
+export const v = 42;
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "sr-no-scope-default",
+        taskDescription: "no touchList, no allowUnscopedDiff → must reject",
+        builderCount: 1,
+        baseBranch: "main",
+        // touchList omitted, allowUnscopedDiff omitted → default false
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "scope_rejected");
+    assert.equal(c?.ok, false);
+    assert.match(c?.errorMessage ?? "", /allowUnscopedDiff/);
+    assert.ok(c?.worktreePath);
+    assert.equal(
+      existsSync(resolve(c!.worktreePath!, "added.ts")),
+      false,
+      "added.ts must NOT exist — apply should not have run",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm: in-scope S/R block (modify existing file) → applies, commits, collects", async () => {
+  // Sanity check that the S/R happy path still works after pre-scope
+  // gate is added — a touchList match should NOT be rejected. Modify
+  // README.md (seeded by makeRepo) so the change shows in `git diff`
+  // (untracked-new-file via S/R is a separate, tracked issue — not
+  // what this test is pinning).
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# replaced via S/R
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "sr-allowed",
+        taskDescription: "S/R inside scope",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(
+      c?.ok,
+      true,
+      `expected collected, got ${c?.phase}: ${c?.errorMessage}`,
+    );
+    assert.equal(c?.phase, "collected");
+    assert.deepEqual(c?.patch?.files, ["README.md"]);
   } finally {
     cleanup();
   }

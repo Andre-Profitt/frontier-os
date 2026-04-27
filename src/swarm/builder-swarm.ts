@@ -30,7 +30,10 @@ import type { BuilderRun, BuilderPatch } from "../builders/types.ts";
 import { defaultGitRunner, type GitRunner } from "../builders/git.ts";
 import { loadPromptTemplate, loadSkill, type Skill } from "../skills/loader.ts";
 import { extractDiffs } from "./diff-extractor.ts";
-import { checkDiffScope } from "./diff-scope-checker.ts";
+import {
+  checkDiffScope,
+  checkSearchReplaceScope,
+} from "./diff-scope-checker.ts";
 import {
   parseSearchReplaceBlocks,
   applySearchReplaceBlocks,
@@ -332,6 +335,44 @@ async function runOneBuilder(
   // "patch already applied".
   let alreadyApplied = false;
   if (srParse.blocks.length > 0) {
+    // ---- 4.4 PRE-APPLY scope check (Patch R blocker #1) ----
+    // The S/R applier writes to disk during apply. If we deferred the
+    // scope check until after apply (the way the unified-diff path
+    // does), an out-of-scope candidate would mutate the worktree
+    // before being rejected — leaving a dirty tree behind even though
+    // the candidate is reported as scope_rejected. Catch it here on
+    // the parsed block file paths so we never write rejected blocks.
+    if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "scope_rejected",
+        elapsedMs: now() - tStart,
+        errorMessage:
+          "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
+        rawText,
+      };
+    }
+    const srScope = checkSearchReplaceScope(srParse.blocks, {
+      touchList: input.touchList,
+    });
+    if (!srScope.allowed) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "scope_rejected",
+        elapsedMs: now() - tStart,
+        errorMessage: `S/R scope rejected — ${srScope.reason}`,
+        rawText,
+      };
+    }
+
     const apply = applySearchReplaceBlocks(run.worktreePath, srParse.blocks);
     if (!apply.ok) {
       return {

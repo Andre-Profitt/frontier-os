@@ -203,8 +203,19 @@ export async function runReviewSwarm(
         });
         const elapsedMs = now() - tStart;
         if (!callRes.ok || !callRes.selected) {
+          // Patch R blocker #3: when the reviewer was pinned via
+          // round-robin, attribute the failure to the *intended* model.
+          // Without this, the quality ledger's model_event aggregation
+          // drops failures for the pinned model entirely (modelKey
+          // undefined → "if (!reviewer.modelKey) continue;" in
+          // writer.ts), making pinned-reviewer failure rates invisible.
+          // Don't invent a modelKey for unpinned calls — undefined is
+          // the correct signal there.
           return {
             reviewerId,
+            ...(pinnedModelKey !== undefined
+              ? { modelKey: pinnedModelKey }
+              : {}),
             ok: false,
             elapsedMs,
             errorMessage: `broker rejected: ${callRes.rejected ?? "unknown"}`,
@@ -229,8 +240,10 @@ export async function runReviewSwarm(
         return run;
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        // Same attribution rule as the broker-rejection branch above.
         return {
           reviewerId,
+          ...(pinnedModelKey !== undefined ? { modelKey: pinnedModelKey } : {}),
           ok: false,
           elapsedMs: now() - tStart,
           errorMessage: `exception during broker call: ${message}`,

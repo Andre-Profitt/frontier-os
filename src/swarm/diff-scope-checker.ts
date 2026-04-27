@@ -176,3 +176,74 @@ export function checkDiffScope(
     reason,
   };
 }
+
+// Path-only scope check for parsed search/replace blocks. Mirrors
+// checkDiffScope's touch-list + path-danger logic, but consumes block
+// filePaths directly (no diff parsing). The S/R applier writes to disk
+// at the moment of apply — without a pre-apply check, an out-of-scope
+// candidate would mutate the worktree before the unified-diff scope
+// check fires later in the pipeline. Builder-swarm calls this BEFORE
+// applySearchReplaceBlocks(). (GPT Pro Patch R blocker #1.)
+//
+// Binary-marker check is omitted — S/R blocks are inherently text-only;
+// they have no equivalent of `Binary files ... differ` markers.
+export function checkSearchReplaceScope(
+  blocks: ReadonlyArray<{ filePath: string }>,
+  opts: ScopeCheckOptions,
+): ScopeCheckResult {
+  const touchedFiles = Array.from(
+    new Set(blocks.map((b) => b.filePath)),
+  ).sort();
+
+  if (touchedFiles.length === 0) {
+    return {
+      allowed: true,
+      touchedFiles,
+      violations: [],
+      reason: "no S/R blocks supplied",
+    };
+  }
+
+  const violations: ScopeViolation[] = [];
+
+  // Path-danger check applies regardless of touchList.
+  for (const p of touchedFiles) {
+    const danger = checkPathDanger(p);
+    if (danger) violations.push({ path: p, reason: danger });
+  }
+
+  // touchList check only applies when caller pinned scope. Empty list =
+  // skip the gate (callers without a scope pass an empty list).
+  if (opts.touchList.length > 0) {
+    const allowSet = new Set(opts.touchList);
+    for (const p of touchedFiles) {
+      if (!allowSet.has(p)) {
+        violations.push({ path: p, reason: "outside_touch_list" });
+      }
+    }
+  }
+
+  if (violations.length === 0) {
+    return {
+      allowed: true,
+      touchedFiles,
+      violations: [],
+      reason: `${touchedFiles.length} S/R file(s) touched, all in scope`,
+    };
+  }
+
+  const byReason: Record<string, string[]> = {};
+  for (const v of violations) {
+    (byReason[v.reason] ??= []).push(v.path);
+  }
+  const reason = Object.entries(byReason)
+    .map(([r, ps]) => `${r}: ${ps.join(", ")}`)
+    .join(" | ");
+
+  return {
+    allowed: false,
+    touchedFiles,
+    violations,
+    reason,
+  };
+}

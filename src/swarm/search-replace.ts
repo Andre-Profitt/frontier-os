@@ -92,6 +92,34 @@ function findMarker(
   return { start, end: start + m[0].length };
 }
 
+// Find the LAST match of `re` within text[from..to). Returns null when
+// no match. Used by the S/R parser to anchor the SEPARATOR to the LAST
+// `=======` line before REPLACE — without this, SEARCH text legitimately
+// containing a `=======` line (banner, doc comment, fixture) would split
+// the block at the in-content equals and produce a mangled (search,
+// replace) pair. (GPT Pro Patch R blocker #2.)
+function findLastMarker(
+  text: string,
+  re: RegExp,
+  from: number,
+  to: number,
+): MarkerMatch | null {
+  if (to <= from) return null;
+  const slice = text.slice(from, to);
+  const localRe = new RegExp(re.source, "gm");
+  let last: MarkerMatch | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = localRe.exec(slice)) !== null) {
+    const start = from + m.index;
+    last = { start, end: start + m[0].length };
+    // Avoid infinite loop on zero-width matches (defensive — our
+    // markers are length ≥ 5, but global regexes that match empty
+    // strings can stall).
+    if (m.index === localRe.lastIndex) localRe.lastIndex += 1;
+  }
+  return last;
+}
+
 export function parseSearchReplaceBlocks(text: string): ParseResult {
   const blocks: SearchReplaceBlock[] = [];
   const warnings: string[] = [];
@@ -107,24 +135,36 @@ export function parseSearchReplaceBlocks(text: string): ParseResult {
     // SEARCH — accept any whitespace.
     const beforeSearch = text.slice(cursor, searchM.start);
     const filePath = extractTrailingPath(beforeSearch);
+    // Anchor on REPLACE first (block end), then locate the LAST
+    // SEPARATOR before it. This is the core of the parser-hardening
+    // fix: SEARCH content legitimately containing `=======` (banners,
+    // doc comments, fixtures, conflict-marker examples) used to split
+    // the block at the in-content separator. Anchoring on the LAST
+    // separator before REPLACE keeps the full SEARCH text intact while
+    // still rejecting truly malformed blocks (no REPLACE → no anchor).
+    const replaceM = findMarker(text, REPLACE_RE, searchM.end);
+    if (!replaceM) {
+      warnings.push(
+        `block at offset ${searchM.start}${filePath ? ` (${filePath})` : ""}: no '>>>>>>> REPLACE' close`,
+      );
+      break;
+    }
     if (!filePath) {
       warnings.push(
         `block at offset ${searchM.start}: no filename line above SEARCH marker`,
       );
-      cursor = searchM.end;
+      cursor = replaceM.end;
       continue;
     }
-    const sepM = findMarker(text, SEPARATOR_RE, searchM.end);
+    const sepM = findLastMarker(
+      text,
+      SEPARATOR_RE,
+      searchM.end,
+      replaceM.start,
+    );
     if (!sepM) {
       warnings.push(
         `block at offset ${searchM.start} (${filePath}): no '=======' separator`,
-      );
-      break;
-    }
-    const replaceM = findMarker(text, REPLACE_RE, sepM.end);
-    if (!replaceM) {
-      warnings.push(
-        `block at offset ${searchM.start} (${filePath}): no '>>>>>>> REPLACE' close`,
       );
       break;
     }

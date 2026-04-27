@@ -74,6 +74,15 @@ function readKind<T extends QualityLedgerEvent>(
   if (!existsSync(file)) return [];
   const text = readFileSync(file, "utf8");
   const out: T[] = [];
+  // Patch R blocker #4: dedupe by eventId. After a crash + retry, the
+  // same eventId can appear twice in the JSONL (once from the partial
+  // crashed attempt, once from the successful retry — eventIds are
+  // deterministic from the input packet, so they collide). Without
+  // this, model_event aggregation in scorecards double-counts the
+  // partial-crash rows. Keep the FIRST occurrence; subsequent
+  // duplicates are byte-identical because event content is a pure
+  // function of the input.
+  const seenEventIds = new Set<string>();
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]!;
@@ -103,6 +112,11 @@ function readKind<T extends QualityLedgerEvent>(
         `kind mismatch: expected ${expectedKind}, got ${String(kind)}`,
       );
       continue;
+    }
+    const eventId = (parsed as { eventId?: unknown }).eventId;
+    if (typeof eventId === "string") {
+      if (seenEventIds.has(eventId)) continue;
+      seenEventIds.add(eventId);
     }
     out.push(parsed as T);
   }
