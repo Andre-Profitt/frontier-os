@@ -1,7 +1,7 @@
 {
   "$schema": "../schemas/model-policy.schema.json",
   "version": "v1",
-  "summary": "Task-class → model routing for the inference broker. Local-first (Ollama) for daily / offline; NVIDIA NIM hybrid for frontier coder models that don't fit on local hardware (Patch N).",
+  "summary": "Task-class → model routing for the inference broker. Patch R (2026-04-28): brain-on-NIM policy shift — NIM-first across ALL classes for speed + battery + GPU freedom; local Ollama retained as offline / cost fallback only. Was Patch N hybrid local-first.",
   "providers": {
     "nvidia-nim": {
       "enabled": true,
@@ -40,12 +40,8 @@
       "maxParallel": 4
     },
     "patch_builder": {
-      "summary": "Generate code patches in isolated worktrees. Patch N (2026-04-27): NIM enabled, hybrid local+NIM. Local first for offline / daily, NIM frontier coder when it fits the prompt. Order: smaller-fast → bigger-accurate. qwen2.5-coder:14b validated as local primary (selectionRate 2/3 in Patch M comparison batch). qwen2.5:72b is the local diversity alt (1/16, but the wins are real). Patch N.2: dropped qwen/qwen2.5-coder-32b-instruct from NIM — endpoint hangs >200s on a 5-token completion (verified 2026-04-27 with direct curl); other NIM models (llama-3.3-70b, kimi-k2, deepseek-v4-flash, qwen3-coder-480b) all respond in <2s.",
+      "summary": "Generate code patches in isolated worktrees. Patch R (2026-04-28): flipped to NIM-first per Andre's brain-on-NIM decision. Reasoning: M4 Max running 14b/72b coder models drains battery and ties up the GPU for other work; NIM frontier coders (qwen3-coder-480b, kimi-k2, deepseek-v4-pro) respond in <2s on free tier. Local Ollama models retained as offline fallback. Earlier Patch M finding (qwen2.5-coder:14b 2/3 selectionRate) preceded the policy shift; revisit if NIM coder quality drops in eval. Patch N.2 quirk still applies: do NOT add qwen/qwen2.5-coder-32b-instruct (hangs >200s on completion).",
       "models": [
-        { "provider": "ollama-local", "model": "qwen2.5-coder:14b" },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" },
-        { "provider": "ollama-local", "model": "aegis-main:latest" },
-        { "provider": "ollama-local", "model": "dolphin-llama3:70b" },
         {
           "provider": "nvidia-nim",
           "model": "qwen/qwen3-coder-480b-a35b-instruct"
@@ -54,7 +50,11 @@
           "provider": "nvidia-nim",
           "model": "moonshotai/kimi-k2-instruct-0905"
         },
-        { "provider": "nvidia-nim", "model": "deepseek-ai/deepseek-v4-pro" }
+        { "provider": "nvidia-nim", "model": "deepseek-ai/deepseek-v4-pro" },
+        { "provider": "ollama-local", "model": "qwen2.5-coder:14b" },
+        { "provider": "ollama-local", "model": "qwen2.5:72b" },
+        { "provider": "ollama-local", "model": "aegis-main:latest" },
+        { "provider": "ollama-local", "model": "dolphin-llama3:70b" }
       ],
       "maxParallel": 1,
       "gates": {
@@ -87,8 +87,11 @@
       "maxParallel": 1
     },
     "merge_arbiter": {
-      "summary": "Final merge recommendation. Stays on the strongest trusted model. Empty until a frontier model is wired explicitly — broker will return a clear error rather than guess.",
-      "models": [],
+      "summary": "Final merge recommendation. Patch R (2026-04-28): wired with NIM kimi-k2-thinking primary (reasoning-tuned, JSON-disciplined, same model adversarial_review uses) and glm-5.1 as second-opinion. No local fallback by design — merge arbitration is high-stakes, NIM frontier or fail explicitly.",
+      "models": [
+        { "provider": "nvidia-nim", "model": "moonshotai/kimi-k2-thinking" },
+        { "provider": "nvidia-nim", "model": "z-ai/glm-5.1" }
+      ],
       "maxParallel": 1
     }
   },
