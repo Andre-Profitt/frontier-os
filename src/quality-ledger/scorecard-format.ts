@@ -51,6 +51,12 @@ function formatBuildersSection(rows: BuilderModelScore[]): string {
     "won/part",
     "rubric",
     "highBugs",
+    // Patch FF: retry-yield columns. "rescues/used" composite cells
+    // (e.g. "1/2") or "—" when the retry path was never tripped — same
+    // grammar as won/part. Lets an operator spot at-a-glance whether
+    // the retry budget is paying off per (model, class).
+    "apRescue",
+    "vfRescue",
   ];
   const data: string[][] = rows.map((r) => [
     r.modelKey,
@@ -61,6 +67,8 @@ function formatBuildersSection(rows: BuilderModelScore[]): string {
     `${r.orchestrationsWon}/${r.orchestrationsParticipated}`,
     fmtNullable(r.meanRubricScore),
     String(r.highBugFindingsAgainst),
+    fmtRescue(r.applyRetryRescues, r.applyRetriesUsed),
+    fmtRescue(r.verifyRetryRescues, r.verifyRetriesUsed),
   ]);
   if (data.length === 0) {
     return "BUILDERS\n  (none)";
@@ -109,4 +117,14 @@ function fmtRate(n: number): string {
 
 function fmtNullable(n: number | null): string {
   return n === null ? "—" : n.toFixed(2);
+}
+
+// Patch FF: format a rescue cell as "rescues/used" (e.g. "1/2"), or
+// "—" when the retry path was never tripped. The em-dash matches
+// fmtNullable's "no signal" convention so the table reads consistently
+// — a 0 here would be ambiguous (zero rescues out of zero attempts vs.
+// zero rescues out of N attempts).
+function fmtRescue(rescues: number, used: number): string {
+  if (used === 0) return "—";
+  return `${rescues}/${used}`;
 }

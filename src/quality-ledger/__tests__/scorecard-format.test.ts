@@ -123,6 +123,63 @@ test("formatScorecardTable: filtered-to-builder input does not emit REVIEWERS se
   assert.equal(out.includes("REVIEWERS"), false);
 });
 
+// --- Patch FF: retry-rescue columns ------------------------------------
+
+test("formatScorecardTable (Patch FF): apRescue / vfRescue columns render as rescues/used composite cells", () => {
+  // The composite shape mirrors won/part — "1/2" reads at-a-glance
+  // as "rescued 1 of 2 attempts" without forcing the operator to
+  // hold ratios in their head. fmtRate(rescueRate) was the
+  // alternative; rejected because seeing "0.50" without the
+  // denominator hides whether the sample is meaningful (1/2 is much
+  // weaker signal than 50/100 even though both render the same rate).
+  const out = formatScorecardTable([
+    builder({
+      applyRetriesUsed: 2,
+      applyRetryRescues: 1,
+      applyRetryRescueRate: 0.5,
+      verifyRetriesUsed: 3,
+      verifyRetryRescues: 2,
+      verifyRetryRescueRate: 2 / 3,
+    }),
+  ]);
+  assert.match(out, /apRescue/);
+  assert.match(out, /vfRescue/);
+  assert.match(out, /1\/2/);
+  assert.match(out, /2\/3/);
+});
+
+test("formatScorecardTable (Patch FF): retry path never tripped → cells render as em-dash, not 0/0", () => {
+  // 0/0 would imply "had attempts, none rescued" which is the wrong
+  // signal. Em-dash matches the rubric=null rendering — same "no
+  // signal yet" grammar across the table.
+  const out = formatScorecardTable([
+    builder({
+      applyRetriesUsed: 0,
+      applyRetryRescues: 0,
+      applyRetryRescueRate: null,
+      verifyRetriesUsed: 0,
+      verifyRetryRescues: 0,
+      verifyRetryRescueRate: null,
+    }),
+  ]);
+  assert.equal(out.includes("0/0"), false);
+  // Should still show em-dash somewhere (rubric or rescue cells).
+  assert.match(out, /—/);
+});
+
+test("formatScorecardTable (Patch FF): apply-retry tripped but never rescued renders 0/N (not em-dash)", () => {
+  // Distinct signal from "never tripped". 0/5 is actionable: this
+  // model trips the retry path but the retry never works for it.
+  const out = formatScorecardTable([
+    builder({
+      applyRetriesUsed: 5,
+      applyRetryRescues: 0,
+      applyRetryRescueRate: 0,
+    }),
+  ]);
+  assert.match(out, /0\/5/);
+});
+
 test("formatScorecardTable: selectionRate=0 (participated, never won) renders as 0.00", () => {
   const out = formatScorecardTable([
     builder({
