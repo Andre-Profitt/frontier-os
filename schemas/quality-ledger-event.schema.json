@@ -64,6 +64,11 @@
         "rubricCoverage": { "type": "number", "minimum": 0, "maximum": 1 },
         "verificationPhase": { "type": "string" },
         "applyAttempts": { "type": "integer", "minimum": 0 },
+        "readFiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Patch AA: relative paths the builder successfully read via the READ_FILE tool (Patch Z). Empty/undefined means the model did not use the tool. Surfaced into the ledger so a downstream query can compute the tool's actual yield: P(applied | readFiles.length > 0) vs P(applied | readFiles.length === 0) per (model, class)."
+        },
         "arbiterOutcome": {
           "enum": ["selected", "not_selected", "excluded"]
         },

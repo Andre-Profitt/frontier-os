@@ -74,6 +74,7 @@ function makeBuilderPacket(opts: {
     ok?: boolean;
     withPatch?: boolean;
     applyAttempts?: number;
+    readFiles?: string[];
   }>;
   taskClass?: string;
 }): BuilderSwarmPacket {
@@ -110,6 +111,7 @@ function makeBuilderPacket(opts: {
       ...(c.applyAttempts !== undefined
         ? { applyAttempts: c.applyAttempts }
         : {}),
+      ...(c.readFiles !== undefined ? { readFiles: c.readFiles } : {}),
     })),
     elapsedMs: 100,
   };
@@ -584,6 +586,105 @@ test("buildEvents: applyAttempts omitted when candidate took unified-diff path (
   assert.ok(wr);
   assert.equal(
     "applyAttempts" in wr ? wr.applyAttempts : "field-absent",
+    "field-absent",
+  );
+});
+
+// --- buildEvents: readFiles (Patch AA) ----------------------------------
+//
+// Patch Z (50f1b7b) added the READ_FILE tool — model can request one
+// file outside its touch list per attempt. The successfully-read paths
+// land on candidate.readFiles. Patch AA plumbs that into the
+// worker_run row so downstream queries can compute the tool's actual
+// yield: P(applied | readFiles.length > 0) vs P(applied |
+// readFiles.length === 0) per (model, class). Without this field the
+// READ_FILE tool's value is unmeasurable.
+
+test("buildEvents (Patch AA): readFiles surfaces from candidate to worker_run row", () => {
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          readFiles: ["src/helper.ts", "src/types.ts"],
+        },
+        {
+          builderId: "b2",
+          modelKey: "nim:k2",
+          phase: "collected",
+          withPatch: true,
+          readFiles: ["lib/util.ts"],
+        },
+        {
+          builderId: "b3",
+          modelKey: "nim:k3",
+          phase: "apply_failed",
+          // Even apply_failed candidates can carry readFiles — the
+          // model used the tool but still botched the S/R afterward.
+          // That's important signal: high readFiles + high
+          // apply_failed = the tool isn't helping THIS model.
+          readFiles: ["src/foo.ts"],
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 2,
+    }),
+  });
+  const wrByBuilder = new Map(
+    events
+      .filter((e) => e.kind === "worker_run")
+      .map((e) => [
+        "workerId" in e ? e.workerId : "",
+        "readFiles" in e ? e.readFiles : undefined,
+      ]),
+  );
+  assert.deepEqual(wrByBuilder.get("b1"), ["src/helper.ts", "src/types.ts"]);
+  assert.deepEqual(wrByBuilder.get("b2"), ["lib/util.ts"]);
+  assert.deepEqual(wrByBuilder.get("b3"), ["src/foo.ts"]);
+});
+
+test("buildEvents (Patch AA): readFiles omitted when candidate did not use READ_FILE tool", () => {
+  // Candidates that didn't invoke the READ_FILE tool (the common case
+  // when the touch list is sufficient) must not get an empty array
+  // in the ledger row — undefined stays undefined so downstream stats
+  // can distinguish "tool not used" from "tool used but no successful
+  // reads" (the latter currently surfaces as `readFiles: []` from
+  // builder-swarm only when the model tried and was denied; pre-Patch-Z
+  // candidates have no readFiles field at all).
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          // readFiles omitted on purpose
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 1,
+    }),
+  });
+  const wr = events.find(
+    (e) => e.kind === "worker_run" && "workerId" in e && e.workerId === "b1",
+  );
+  assert.ok(wr);
+  assert.equal(
+    "readFiles" in wr ? "field-present" : "field-absent",
     "field-absent",
   );
 });

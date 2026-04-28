@@ -51,6 +51,15 @@ export interface WorkerRunEvent extends BaseEvent {
   // retry's actual yield: P(applied | applyAttempts=2 vs =1) per model
   // / class. Without this field the retry's value is unmeasurable.
   applyAttempts?: number;
+  // Patch AA: relative paths the builder successfully read via the
+  // READ_FILE tool (Patch Z). Empty/undefined means the model did not
+  // use the tool. Surfaced into the ledger so a downstream query can
+  // compute the tool's actual yield: P(applied | readFiles.length > 0)
+  // vs P(applied | readFiles.length === 0) per (model, class).
+  // Without this field the READ_FILE tool's value is unmeasurable —
+  // we'd see accept rates change but couldn't attribute the delta to
+  // the tool vs other concurrent changes.
+  readFiles?: string[];
   // selected = arbiter chose this candidate
   // not_selected = arbiter evaluated but didn't pick (or escalated)
   // excluded = candidate didn't reach phase=collected, never evaluated
