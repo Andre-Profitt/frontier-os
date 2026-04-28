@@ -36,6 +36,37 @@ export interface ChatResponse {
   endpoint: string;
 }
 
+// Patch DD: OpenAI-compatible embeddings request. Same wire format as
+// chat completions — POST /v1/embeddings with { model, input }. NIM's
+// NV-EmbedQA family additionally supports `input_type: "query" |
+// "passage"` (the [key: string]: unknown pass-through covers it without
+// committing to a NIM-specific schema). Most providers (OpenAI,
+// Together, OpenRouter, NIM-non-EmbedQA) ignore unknown fields.
+export interface EmbedRequest {
+  model: string;
+  // OpenAI accepts a single string or an array of strings; we always
+  // pass an array so the response shape is uniform.
+  input: string[];
+  // Provider-specific pass-throughs (e.g. NIM's `input_type`,
+  // `truncate`, `encoding_format`).
+  [key: string]: unknown;
+}
+
+export interface EmbedResponse {
+  ok: boolean;
+  status: number;
+  modelId: string;
+  // One vector per input string, in input order. Empty when !ok.
+  embeddings: number[][];
+  // Parsed body when ok; null otherwise. Surfaced for callers that
+  // need usage tokens / model echoback.
+  body: unknown;
+  rawText: string;
+  retryAfterMs: number | null;
+  durationMs: number;
+  endpoint: string;
+}
+
 export interface ProviderConfig {
   baseUrl: string;
   apiKey?: string; // optional for local providers (ollama / lmstudio)
@@ -134,6 +165,73 @@ export class OpenAICompatibleProvider {
     }
   }
 
+  // Patch DD: OpenAI-compatible embeddings call. Mirrors chatCompletion's
+  // shape — same auth, same timeout, same fetch seam — so the broker
+  // and downstream callers can reuse provider plumbing for both kinds
+  // of inference. Stays a thin client: no batching beyond what the
+  // caller passes, no rate-limit enforcement, no retry logic. Wire
+  // point for the eventual review-swarm anti-example reranker, but
+  // shippable as a foundation cut on its own.
+  async embed(req: EmbedRequest): Promise<EmbedResponse> {
+    const endpoint = `${this.baseUrl}/embeddings`;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json",
+    };
+    if (this.apiKey) {
+      headers["authorization"] = `Bearer ${this.apiKey}`;
+    }
+
+    const ac = new AbortController();
+    const t0 = Date.now();
+    const timer = setTimeout(() => ac.abort(), this.requestTimeoutMs);
+    try {
+      const res = await this.fetchImpl(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(req),
+        signal: ac.signal,
+      });
+      const rawText = await res.text();
+      const durationMs = Date.now() - t0;
+      let body: unknown = null;
+      try {
+        body = rawText.length > 0 ? JSON.parse(rawText) : null;
+      } catch {
+        body = null;
+      }
+      const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
+      const embeddings = res.ok ? extractEmbeddings(body) : [];
+      return {
+        ok: res.ok,
+        status: res.status,
+        modelId: req.model,
+        embeddings,
+        body,
+        rawText,
+        retryAfterMs,
+        durationMs,
+        endpoint,
+      };
+    } catch (err) {
+      const durationMs = Date.now() - t0;
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        status: 0,
+        modelId: req.model,
+        embeddings: [],
+        body: null,
+        rawText: `client error: ${message}`,
+        retryAfterMs: null,
+        durationMs,
+        endpoint,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async listModels(): Promise<{ ok: boolean; status: number; ids: string[] }> {
     const endpoint = `${this.baseUrl}/models`;
     const headers: Record<string, string> = { accept: "application/json" };
@@ -154,6 +252,40 @@ export class OpenAICompatibleProvider {
       return { ok: false, status: 0, ids: [] };
     }
   }
+}
+
+// Patch DD: extract per-input embedding vectors from a parsed
+// /v1/embeddings response. OpenAI / NIM / Together all return:
+//   { object: "list", data: [{ index: N, embedding: [...] }, ...] }
+// We sort by `index` so callers can rely on input-order alignment
+// even if the provider returns rows out of order (rare but spec-
+// allowed). Returns [] if the body shape doesn't match — the caller
+// already knows ok=false at that point, this just keeps the type
+// surface clean.
+function extractEmbeddings(body: unknown): number[][] {
+  if (!body || typeof body !== "object") return [];
+  const data = (body as { data?: unknown }).data;
+  if (!Array.isArray(data)) return [];
+  const rows: Array<{ index: number; embedding: number[] }> = [];
+  for (const row of data) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { index?: unknown; embedding?: unknown };
+    const idx = typeof r.index === "number" ? r.index : rows.length;
+    if (!Array.isArray(r.embedding)) continue;
+    const vec: number[] = [];
+    let valid = true;
+    for (const v of r.embedding) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        valid = false;
+        break;
+      }
+      vec.push(v);
+    }
+    if (!valid) continue;
+    rows.push({ index: idx, embedding: vec });
+  }
+  rows.sort((a, b) => a.index - b.index);
+  return rows.map((r) => r.embedding);
 }
 
 // retry-after may be either delta-seconds (integer) or HTTP-date.
