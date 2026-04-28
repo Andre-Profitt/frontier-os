@@ -1679,3 +1679,303 @@ test("runBuilderSwarm (Patch Y): packet with applyAttempts validates against bui
     cleanup();
   }
 });
+
+// --- Patch Z: READ_FILE tool for the builder ---------------------------
+//
+// Patch Y added retry-with-feedback as the smallest tool-flavored
+// increment. Patch Z adds a genuine tool: the builder may emit
+// `READ_FILE: <relative-path>` (alone, no S/R or diff in the response)
+// to request the contents of a file outside its touch list. The runner
+// reads it (after path safety checks), appends it to the original
+// prompt, and re-calls the broker. The model then proceeds with S/R as
+// normal. This unblocks the case where the touch list isn't sufficient
+// context — e.g. the model needs to inspect a sibling test file or a
+// type definition to write a correct patch.
+//
+// Default `maxReadFiles` = 1 (one read per builder). Path safety:
+// no absolute paths, no traversal, file must exist in worktree, size
+// capped at 64KB (truncated with note if larger).
+//
+// READ_FILE detection only fires when the response contains NEITHER
+// S/R blocks NOR a unified-diff header — the model shouldn't be
+// emitting both code AND a tool request, and if it does we prefer the
+// actual delivery.
+//
+// READ_FILE budget and Patch Y's apply-retry budget are independent:
+// using the read tool does not cost retry headroom, and vice versa.
+// A hard total iteration cap (1 + maxReadFiles + maxApplyRetries + 2)
+// catches pathological loops as a safety net.
+
+test("runBuilderSwarm (Patch Z): builder emits READ_FILE → file content provided in followup → S/R succeeds", async () => {
+  const broker = new StubBroker();
+  // Attempt 1: model asks for a file outside the touch list.
+  broker.enqueue({
+    ok: true,
+    assistantText: `I need to inspect the helper module first.
+
+READ_FILE: helper.txt
+`,
+  });
+  // Attempt 2: model produces correct S/R against README.md.
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# replaced via Patch Z (read helper.txt first)
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  // Seed an extra file the model will request — outside touchList.
+  writeFileSync(
+    resolve(repoRoot, "helper.txt"),
+    "helper content the model needs\n",
+  );
+  git(["add", "helper.txt"], repoRoot);
+  git(["commit", "-q", "-m", "add helper"], repoRoot);
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-z-read-file-success",
+        taskDescription: "use the read tool to inspect helper.txt",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(
+      c?.ok,
+      true,
+      `expected collected after read+S/R, got ${c?.phase}: ${c?.errorMessage}`,
+    );
+    assert.equal(c?.phase, "collected");
+    assert.equal(c?.applyAttempts, 1, "S/R applied first try after read");
+    assert.deepEqual(
+      c?.readFiles,
+      ["helper.txt"],
+      "readFiles should record the satisfied read",
+    );
+    assert.equal(
+      broker.callLog.length,
+      2,
+      "broker called twice (read + apply)",
+    );
+    // Followup prompt must contain the file content the model requested.
+    const followupPrompt = broker.callLog[1]?.prompt ?? "";
+    assert.match(
+      followupPrompt,
+      /helper content the model needs/,
+      "followup must include the requested file's contents",
+    );
+    assert.match(
+      followupPrompt,
+      /helper\.txt/,
+      "followup must reference the path",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Z): READ_FILE for path with .. traversal → denied, model recovers with S/R on next turn", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `READ_FILE: ../../../etc/passwd`,
+  });
+  // After error feedback the model produces a valid S/R.
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# recovered
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-z-traversal",
+        taskDescription: "model misuses tool then recovers",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(
+      c?.ok,
+      true,
+      `expected recovery, got ${c?.phase}: ${c?.errorMessage}`,
+    );
+    assert.equal(c?.phase, "collected");
+    // Denied request does NOT land in readFiles.
+    assert.deepEqual(c?.readFiles ?? [], []);
+    assert.equal(broker.callLog.length, 2);
+    const followup = broker.callLog[1]?.prompt ?? "";
+    assert.match(
+      followup,
+      /traversal|outside|denied|invalid/i,
+      "followup must explain why the read was denied",
+    );
+    // The traversal target must NOT appear inlined as content (the
+    // whole point of denying it).
+    assert.doesNotMatch(
+      followup,
+      /root:.*:0:0/,
+      "denied path's contents must not appear in the followup",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Z): maxReadFiles=0 → READ_FILE response is treated as no_diff_extracted (tool disabled)", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `READ_FILE: README.md`,
+  });
+  // Second response queued; should not be consumed if tool disabled.
+  broker.enqueue({
+    ok: true,
+    assistantText: `(would-be-followup — should not be sent)`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-z-disabled",
+        taskDescription: "read tool disabled",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        maxReadFiles: 0,
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "no_diff_extracted");
+    assert.equal(c?.ok, false);
+    assert.equal(broker.callLog.length, 1, "no followup broker call");
+    assert.equal(broker.queueRemaining(), 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Z): READ_FILE for non-existent file → denied with feedback, model recovers", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `READ_FILE: does-not-exist.md`,
+  });
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# fixed after missing-file feedback
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-z-missing-file",
+        taskDescription: "request missing file",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.ok, true);
+    assert.equal(c?.phase, "collected");
+    assert.deepEqual(c?.readFiles ?? [], []);
+    const followup = broker.callLog[1]?.prompt ?? "";
+    assert.match(
+      followup,
+      /not exist|not found|missing/i,
+      "followup must explain that the file is missing",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch Z): packet with readFiles validates against builder-swarm-packet schema", async () => {
+  const { validateBuilderSwarmPacket } = await import("../../schemas.ts");
+  const broker = new StubBroker();
+  broker.enqueue({ ok: true, assistantText: `READ_FILE: helper.txt` });
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# done
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  writeFileSync(resolve(repoRoot, "helper.txt"), "x\n");
+  git(["add", "helper.txt"], repoRoot);
+  git(["commit", "-q", "-m", "add helper"], repoRoot);
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-z-schema",
+        taskDescription: "schema validation",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    assert.deepEqual(packet.candidates[0]?.readFiles, ["helper.txt"]);
+    const valid = validateBuilderSwarmPacket(packet);
+    if (!valid) {
+      console.error(JSON.stringify(validateBuilderSwarmPacket.errors, null, 2));
+    }
+    assert.equal(valid, true);
+  } finally {
+    cleanup();
+  }
+});

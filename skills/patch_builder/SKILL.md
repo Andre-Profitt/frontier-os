@@ -68,6 +68,29 @@ Constraints:
 - Do not push.
 - Do not call other model classes.
 
+Optional read tool (Patch Z) — use sparingly:
+- If, BEFORE producing your search/replace blocks, you need to inspect
+  a file outside your touch list (e.g. a sibling test, a type
+  definition, a helper module imported by a touch-list file), respond
+  with EXACTLY:
+
+      READ_FILE: <relative-path-from-worktree-root>
+
+  on its own line, with NO search/replace blocks, NO unified diff, and
+  NO other content beyond optional brief reasoning.
+
+- The runner will re-prompt you with the file's contents inlined. Then
+  produce your search/replace blocks as normal.
+
+- Constraints: relative paths only (no absolute paths, no `..`
+  traversal). The file must exist in the worktree. You get ONE read
+  per attempt — choose the file that gives the most leverage. Reads
+  beyond the budget are denied; abusing the tool wastes broker calls
+  and may surface the candidate as `no_diff_extracted`.
+
+- If your touch list and the readable workspace already give you what
+  you need, SKIP this tool and go straight to search/replace.
+
 Search/replace block format (one block per edit; multiple blocks ok).
 The filename line MUST be one of the EXACT paths from your touch
 list above (NOT a placeholder like "path/to/file.ts"). Schematic:

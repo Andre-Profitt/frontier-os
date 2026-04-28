@@ -22,7 +22,7 @@
 
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 
 import type { InferenceBroker } from "../inference/broker.ts";
 import type { WorktreeManager } from "../builders/worktree-manager.ts";
@@ -88,6 +88,12 @@ export interface CandidatePatch {
   // first call, scope_rejected). 1 means one-shot success or one-shot
   // failure with retries disabled; >1 means a retry was triggered.
   applyAttempts?: number;
+  // Patch Z: relative paths the builder successfully read via the
+  // READ_FILE tool. Denied requests (path traversal, non-existent
+  // file, budget exhausted) are NOT recorded here — only successful
+  // reads. Empty/undefined means the model did not use the read tool
+  // (or every request was denied).
+  readFiles?: string[];
 }
 
 export interface BuilderSwarmInput {
@@ -129,6 +135,14 @@ export interface BuilderSwarmInput {
   // retry entirely (legacy behavior). Retry covers ONLY the S/R path;
   // unified-diff apply failures never retry.
   maxApplyRetries?: number;
+  // Patch Z: maximum READ_FILE tool invocations per builder. When the
+  // model emits `READ_FILE: <relative-path>` (alone, no S/R or diff),
+  // the runner reads it (after path safety checks: no absolute paths,
+  // no `..` traversal, must exist in worktree, size capped) and
+  // re-prompts with the file contents appended. Default 1. Set to 0
+  // to disable the tool entirely — a READ_FILE response then surfaces
+  // as no_diff_extracted. Independent budget from maxApplyRetries.
+  maxReadFiles?: number;
   // Test seams.
   loadSkillImpl?: (taskClass: string) => Skill | null;
   loadPromptTemplateImpl?: (skill: Skill) => string;
@@ -234,6 +248,9 @@ export async function runBuilderSwarm(
         ...(input.maxApplyRetries !== undefined
           ? { maxApplyRetries: input.maxApplyRetries }
           : {}),
+        ...(input.maxReadFiles !== undefined
+          ? { maxReadFiles: input.maxReadFiles }
+          : {}),
         ...(input.verifierImpl !== undefined
           ? { verifierImpl: input.verifierImpl }
           : {}),
@@ -293,6 +310,8 @@ interface RunOneBuilderInput {
   testCommand?: string[] | null;
   // Patch Y: retry budget for S/R apply failures (see BuilderSwarmInput).
   maxApplyRetries?: number;
+  // Patch Z: READ_FILE budget (see BuilderSwarmInput).
+  maxReadFiles?: number;
   verifierImpl?: typeof verifyCandidate;
   now: () => number;
   exec: GitRunner;
@@ -354,9 +373,26 @@ async function runOneBuilder(
   // re-prompt with that error appended typically produces a clean
   // apply. The loop ONLY retries on S/R apply failures; broker
   // failures and scope rejections short-circuit immediately.
+  //
+  // Patch Z: same loop now also handles READ_FILE tool requests. When
+  // the model emits `READ_FILE: <path>` (alone, no S/R or diff in the
+  // response), the runner reads the file (after path safety checks)
+  // and re-prompts with the contents appended. Read budget and apply
+  // retry budget are independent — using one does not consume the
+  // other. Termination is guaranteed: each iteration either succeeds,
+  // returns failure, or consumes one budget unit; once both budgets
+  // are exhausted the next iteration falls into a return path.
   const maxApplyRetries = input.maxApplyRetries ?? 1;
+  const maxReadFiles = input.maxReadFiles ?? 1;
   let promptToSend = baseFilledPrompt;
   let attempt = 0;
+  // Counts S/R apply executions specifically (success or failure).
+  // READ_FILE responses don't bump this — only actual applies do.
+  let applyCount = 0;
+  // Counts every READ_FILE response we processed (including denied
+  // requests). Shared budget — a denied path traversal still costs
+  // a slot, so the model can't loop forever on bad paths.
+  let readFileCalls = 0;
   // Set on first successful broker response and re-set on each retry.
   let modelKey: string | undefined;
   let rawText = "";
@@ -366,6 +402,9 @@ async function runOneBuilder(
   let diffText: string | undefined;
   let alreadyApplied = false;
   let applyAttempts: number | undefined;
+  // Patch Z: relative paths the builder successfully read. Denied
+  // requests are NOT recorded here; only successful reads.
+  const readFiles: string[] = [];
   // Combined transcript surfaced as rawText on multi-attempt apply
   // failure — operator/arbiter can salvage from any attempt.
   const transcript: string[] = [];
@@ -405,6 +444,9 @@ async function runOneBuilder(
       // Patch Y: a retry's broker call exception does not escalate to
       // broker_failed — the underlying problem was the prior apply
       // failure. Surface that with a note about the lost retry call.
+      // Patch Z: applyAttempts is `applyCount` (number of actual S/R
+      // apply executions), not `attempt - 1` — the latter would
+      // wrongly count READ_FILE iterations toward apply attempts.
       return {
         builderId,
         ...(modelKey !== undefined ? { modelKey } : {}),
@@ -413,9 +455,10 @@ async function runOneBuilder(
         ok: false,
         phase: "apply_failed",
         elapsedMs: now() - tStart,
-        errorMessage: `search/replace apply failed on attempt ${attempt - 1}; retry broker call failed: ${e instanceof Error ? e.message : String(e)}`,
+        errorMessage: `search/replace apply failed on attempt ${applyCount}; retry broker call failed: ${e instanceof Error ? e.message : String(e)}`,
         rawText: transcript.join("\n\n"),
-        applyAttempts: attempt - 1,
+        applyAttempts: applyCount,
+        ...(readFiles.length > 0 ? { readFiles } : {}),
       };
     }
 
@@ -442,9 +485,10 @@ async function runOneBuilder(
         ok: false,
         phase: "apply_failed",
         elapsedMs: now() - tStart,
-        errorMessage: `search/replace apply failed on attempt ${attempt - 1}; retry broker call rejected: ${brokerResult.rejected ?? "unknown"}`,
+        errorMessage: `search/replace apply failed on attempt ${applyCount}; retry broker call rejected: ${brokerResult.rejected ?? "unknown"}`,
         rawText: transcript.join("\n\n"),
-        applyAttempts: attempt - 1,
+        applyAttempts: applyCount,
+        ...(readFiles.length > 0 ? { readFiles } : {}),
       };
     }
 
@@ -506,6 +550,11 @@ async function runOneBuilder(
       }
 
       const apply = applySearchReplaceBlocks(run.worktreePath, srParse.blocks);
+      // Patch Z: bump applyCount on every actual apply execution.
+      // Pre-Patch-Z this was implicit in `attempt`; with READ_FILE
+      // also bumping `attempt`, we need a separate counter for
+      // applies so the retry budget stays scoped to apply failures.
+      applyCount++;
       if (apply.ok) {
         // Synthesize a unified diff from the worktree state. The scope
         // checker + downstream metadata extraction (file list,
@@ -524,7 +573,8 @@ async function runOneBuilder(
             elapsedMs: now() - tStart,
             errorMessage: `search/replace applied but git diff failed: ${diffRes.stderr.trim() || "unknown"}`,
             rawText,
-            applyAttempts: attempt,
+            applyAttempts: applyCount,
+            ...(readFiles.length > 0 ? { readFiles } : {}),
           };
         }
         diffText = diffRes.stdout;
@@ -545,11 +595,12 @@ async function runOneBuilder(
             errorMessage:
               "search/replace blocks applied but resulted in zero net changes",
             rawText,
-            applyAttempts: attempt,
+            applyAttempts: applyCount,
+            ...(readFiles.length > 0 ? { readFiles } : {}),
           };
         }
         alreadyApplied = true;
-        applyAttempts = attempt;
+        applyAttempts = applyCount;
         break retryLoop;
       }
 
@@ -561,7 +612,7 @@ async function runOneBuilder(
       // verbatim from the rendered touch list).
       const applyError = apply.error ?? "unknown";
       transcript.push(`=== Attempt ${attempt} apply error ===\n${applyError}`);
-      if (attempt > maxApplyRetries) {
+      if (applyCount > maxApplyRetries) {
         return {
           builderId,
           modelKey,
@@ -571,38 +622,93 @@ async function runOneBuilder(
           phase: "apply_failed",
           elapsedMs: now() - tStart,
           errorMessage:
-            attempt > 1
-              ? `search/replace apply failed (after ${attempt} attempts): ${applyError}`
+            applyCount > 1
+              ? `search/replace apply failed (after ${applyCount} attempts): ${applyError}`
               : `search/replace apply failed: ${applyError}`,
           rawText: transcript.join("\n\n"),
-          applyAttempts: attempt,
+          applyAttempts: applyCount,
+          ...(readFiles.length > 0 ? { readFiles } : {}),
         };
       }
       promptToSend = buildRetryPrompt(baseFilledPrompt, rawText, applyError);
       continue retryLoop;
     }
 
-    // No S/R blocks — fall through to unified-diff extraction. Retry
-    // does not apply here; if the model emitted text without diff or
-    // S/R, re-prompting with "previous attempt failed" is unlikely
-    // to elicit a different shape and risks confusing the model.
+    // No S/R blocks — try unified-diff extraction. Unified diff path
+    // does NOT participate in apply retry (line-drift has its own
+    // path; Patch M).
     const diffs = extractDiffs(rawText);
-    if (diffs.length === 0) {
-      return {
-        builderId,
-        modelKey,
-        runId: run.runId,
-        worktreePath: run.worktreePath,
-        ok: false,
-        phase: "no_diff_extracted",
-        elapsedMs: now() - tStart,
-        errorMessage:
-          "broker returned text with no S/R blocks, no fenced diff, and no inline diff header",
-        rawText,
-      };
+    if (diffs.length > 0) {
+      diffText = diffs[0]!.diff;
+      break retryLoop;
     }
-    diffText = diffs[0]!.diff;
-    break retryLoop;
+
+    // Patch Z: no S/R, no diff — check for a READ_FILE tool request.
+    // When the model emits `READ_FILE: <relative-path>` (alone) it's
+    // asking for context outside its touch list. Read it (after path
+    // safety checks) and re-prompt with the contents appended. Both
+    // success and denial cost one slot of `maxReadFiles` budget.
+    const readReq = parseReadFileRequest(rawText);
+    if (readReq !== null && maxReadFiles > 0 && readFileCalls < maxReadFiles) {
+      readFileCalls++;
+      const validation = validateReadPath(readReq.path, run.worktreePath);
+      if (!validation.ok) {
+        transcript.push(
+          `=== Attempt ${attempt} READ_FILE: ${readReq.path} (denied: ${validation.error}) ===`,
+        );
+        promptToSend = buildReadFileErrorPrompt(
+          baseFilledPrompt,
+          readReq.path,
+          validation.error,
+        );
+        continue retryLoop;
+      }
+      const fileResult = readFileForBuilder(validation.absolutePath);
+      if (!fileResult.ok) {
+        // Path validated but the read itself failed (rare — file
+        // disappeared mid-flight, permissions). Treat as a denial.
+        transcript.push(
+          `=== Attempt ${attempt} READ_FILE: ${readReq.path} (read failed: ${fileResult.error}) ===`,
+        );
+        promptToSend = buildReadFileErrorPrompt(
+          baseFilledPrompt,
+          readReq.path,
+          fileResult.error,
+        );
+        continue retryLoop;
+      }
+      readFiles.push(readReq.path);
+      transcript.push(
+        `=== Attempt ${attempt} READ_FILE: ${readReq.path} (granted, ${fileResult.contents.length} bytes${fileResult.truncated ? " — truncated" : ""}) ===`,
+      );
+      promptToSend = buildReadFileFollowup(
+        baseFilledPrompt,
+        readReq.path,
+        fileResult.contents,
+        fileResult.truncated,
+      );
+      continue retryLoop;
+    }
+
+    // No S/R, no diff, no usable READ_FILE — surface as no_diff_extracted.
+    // Either the model didn't deliver any actionable content, or it
+    // tried to use the read tool when the budget was already
+    // exhausted (or disabled by maxReadFiles=0).
+    return {
+      builderId,
+      modelKey,
+      runId: run.runId,
+      worktreePath: run.worktreePath,
+      ok: false,
+      phase: "no_diff_extracted",
+      elapsedMs: now() - tStart,
+      errorMessage:
+        readReq !== null
+          ? `READ_FILE requested but read budget exhausted (maxReadFiles=${maxReadFiles}, used=${readFileCalls})`
+          : "broker returned text with no S/R blocks, no fenced diff, and no inline diff header",
+      rawText,
+      ...(readFiles.length > 0 ? { readFiles } : {}),
+    };
   }
 
   // Loop exited via break — diffText is set; modelKey is set;
@@ -709,6 +815,7 @@ async function runOneBuilder(
       errorMessage: `applied but commit failed: ${commitOk.message}`,
       rawText,
       ...(applyAttempts !== undefined ? { applyAttempts } : {}),
+      ...(readFiles.length > 0 ? { readFiles } : {}),
     };
   }
 
@@ -730,6 +837,7 @@ async function runOneBuilder(
         (e instanceof Error ? e.message : String(e)),
       rawText,
       ...(applyAttempts !== undefined ? { applyAttempts } : {}),
+      ...(readFiles.length > 0 ? { readFiles } : {}),
     };
   }
 
@@ -784,6 +892,7 @@ async function runOneBuilder(
     ...(collected.patch ? { patch: collected.patch } : {}),
     ...(builderVerification !== undefined ? { builderVerification } : {}),
     ...(applyAttempts !== undefined ? { applyAttempts } : {}),
+    ...(readFiles.length > 0 ? { readFiles } : {}),
   };
 }
 
@@ -814,6 +923,162 @@ function buildRetryPrompt(
     applyError,
     "",
     "Likely cause: the SEARCH text in one of your blocks does not match the file content character-for-character. The runner uses exact-string matching (no fuzzy match, no whitespace normalization), so paraphrased text, altered indentation, or content from an outdated mental model of the file all fail this way. Re-read the current file contents shown above, then emit corrected search/replace blocks. Copy the SEARCH text verbatim from the rendered file content; do NOT paraphrase or reformat.",
+  ].join("\n");
+}
+
+// Patch Z: parse a `READ_FILE: <path>` request from a broker response.
+// Detection rules:
+//   - A non-empty line matches `^\s*READ_FILE:\s*(\S.*?)\s*$`
+//   - The response contains NO S/R markers and NO unified-diff
+//     header (caller checks both before invoking this) — otherwise
+//     prefer the actual delivery
+//   - Path is captured as-is (including any leading/trailing
+//     whitespace stripped). Backticks around the path are stripped
+//     too — models often quote it.
+// Returns null if no READ_FILE directive is found.
+const READ_FILE_RE = /^\s*READ_FILE:\s*(\S.*?)\s*$/m;
+function parseReadFileRequest(text: string): { path: string } | null {
+  const m = READ_FILE_RE.exec(text);
+  if (!m) return null;
+  const raw = (m[1] ?? "").trim();
+  // Strip surrounding backticks (model often quotes the path).
+  const stripped = raw.replace(/^`+|`+$/g, "").trim();
+  if (stripped.length === 0) return null;
+  return { path: stripped };
+}
+
+// Patch Z: validate a READ_FILE-requested path against the safety
+// policy. Returns { ok: true, absolutePath } when the path is safe
+// to read, otherwise { ok: false, error } with a model-facing reason.
+//
+// Safety policy:
+//   - Reject absolute paths (only relative paths permitted)
+//   - Reject any segment equal to ".." (no traversal out of worktree)
+//   - Reject paths whose resolved absolute form escapes worktreePath
+//     (defense-in-depth against symlinks, exotic separators)
+//   - Reject if the file does not exist at the resolved path
+//   - The path must point to a regular file (not directory or other)
+function validateReadPath(
+  relPath: string,
+  worktreePath: string,
+): { ok: true; absolutePath: string } | { ok: false; error: string } {
+  if (relPath.length === 0) {
+    return { ok: false, error: "empty path" };
+  }
+  if (isAbsolute(relPath)) {
+    return {
+      ok: false,
+      error: `absolute path "${relPath}" — relative paths only`,
+    };
+  }
+  // Reject `..` traversal at the segment level (catches `../etc`,
+  // `a/../b`, etc. before resolve normalizes them).
+  const segments = relPath.split(/[/\\]/);
+  if (segments.some((s) => s === "..")) {
+    return {
+      ok: false,
+      error: `path "${relPath}" contains ".." traversal — denied`,
+    };
+  }
+  const absolute = resolvePath(worktreePath, relPath);
+  // Defense-in-depth: ensure the resolved path is still inside the
+  // worktree. resolve() handles symlink-free paths correctly; this
+  // catches edge cases where segment splitting missed something.
+  const worktreeAbs = resolvePath(worktreePath);
+  const inWorktree =
+    absolute === worktreeAbs ||
+    absolute.startsWith(worktreeAbs + "/") ||
+    absolute.startsWith(worktreeAbs + "\\");
+  if (!inWorktree) {
+    return {
+      ok: false,
+      error: `path "${relPath}" resolves outside the worktree — denied`,
+    };
+  }
+  if (!existsSync(absolute)) {
+    return {
+      ok: false,
+      error: `file "${relPath}" does not exist in the worktree`,
+    };
+  }
+  return { ok: true, absolutePath: absolute };
+}
+
+// Patch Z: read a file for the builder with size cap + truncation.
+// Reuses TOUCH_FILE_SOFT_CAP_BYTES so the read tool's footprint
+// matches the touch-list rendering — operators tuning the prompt
+// budget tune ONE constant.
+function readFileForBuilder(
+  absolutePath: string,
+):
+  | { ok: true; contents: string; truncated: boolean }
+  | { ok: false; error: string } {
+  let contents: string;
+  try {
+    contents = readFileSync(absolutePath, "utf8");
+  } catch (e) {
+    return {
+      ok: false,
+      error: `could not read file: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  let truncated = false;
+  if (contents.length > TOUCH_FILE_SOFT_CAP_BYTES) {
+    contents = contents.slice(0, TOUCH_FILE_SOFT_CAP_BYTES);
+    truncated = true;
+  }
+  return { ok: true, contents, truncated };
+}
+
+// Patch Z: build the followup prompt after a successful READ_FILE.
+// Original prompt + a section showing the requested file's contents.
+// Explicit "do NOT issue another READ_FILE" instruction so the model
+// doesn't burn its remaining attempts on more tool calls when the
+// budget is gone (calling-side enforces the cap regardless, but the
+// hint reduces wasted broker calls in the common case).
+function buildReadFileFollowup(
+  originalPrompt: string,
+  path: string,
+  contents: string,
+  truncated: boolean,
+): string {
+  // Pick a fence that won't collide with content. Match
+  // renderTouchListFiles's behavior so the formatting is consistent.
+  let fence = "````";
+  if (contents.includes(fence)) fence = "`````";
+  return [
+    originalPrompt,
+    "",
+    "## ADDITIONAL FILE — READ_FILE response",
+    "",
+    `You requested to read \`${path}\`. Contents follow${truncated ? ` (truncated at ${TOUCH_FILE_SOFT_CAP_BYTES} bytes — full file is longer)` : ""}:`,
+    "",
+    `### ${path}`,
+    "",
+    fence,
+    contents,
+    fence,
+    "",
+    "Now produce the search/replace blocks for the touch-list files. Do NOT issue another READ_FILE — you have used your read budget.",
+  ].join("\n");
+}
+
+// Patch Z: build the followup prompt after a denied READ_FILE.
+// Surfaces the structured denial reason so the model can either pick
+// a valid path on its remaining read budget OR proceed with S/R.
+function buildReadFileErrorPrompt(
+  originalPrompt: string,
+  requestedPath: string,
+  reason: string,
+): string {
+  return [
+    originalPrompt,
+    "",
+    "## READ_FILE DENIED",
+    "",
+    `You requested to read \`${requestedPath}\`, but the runner rejected it: ${reason}.`,
+    "",
+    "Either request a different file (must be a relative path inside the worktree, no `..` traversal, must exist) OR proceed directly with your search/replace blocks for the touch-list files.",
   ].join("\n");
 }
 

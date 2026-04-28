@@ -111,6 +111,11 @@
           "type": "integer",
           "minimum": 1,
           "description": "Patch Y: number of S/R apply attempts the builder made for this candidate. 1 means first-shot success or first-shot failure with retries disabled. >1 means at least one retry was triggered after a recoverable apply failure (e.g. SEARCH text not found). Set only on candidates that took the S/R path; undefined for unified-diff path and for candidates that failed before reaching apply (broker_failed, no_diff_extracted, scope_rejected)."
+        },
+        "readFiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Patch Z: relative paths the builder successfully read via the READ_FILE tool. Denied requests (path traversal, non-existent file, budget exhausted) are NOT recorded here — only successful reads. Order preserved; duplicates allowed if the model legitimately re-reads. Empty array means the model did not use the read tool (or every request was denied)."
         }
       }
     }
