@@ -26,6 +26,12 @@ function builder(over: Partial<BuilderModelScore> = {}): BuilderModelScore {
     highBugFindingsAgainst: 1,
     meanRubricScore: 0.81,
     meanRubricCoverage: 0.66,
+    applyRetriesUsed: 0,
+    applyRetryRescues: 0,
+    applyRetryRescueRate: null,
+    verifyRetriesUsed: 0,
+    verifyRetryRescues: 0,
+    verifyRetryRescueRate: null,
     ...over,
   };
 }

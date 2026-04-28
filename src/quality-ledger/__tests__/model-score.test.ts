@@ -25,6 +25,9 @@ function wr(opts: {
   rubricCoverage?: number;
   reviewFindings?: WorkerRunEvent["reviewFindings"];
   packetId?: string;
+  applyAttempts?: number;
+  verifyAttempts?: number;
+  builderVerificationPhase?: string;
 }): WorkerRunEvent {
   const result: WorkerRunEvent = {
     eventId: `e-${opts.workerId}`,
@@ -45,6 +48,12 @@ function wr(opts: {
     result.rubricCoverage = opts.rubricCoverage;
   if (opts.reviewFindings !== undefined)
     result.reviewFindings = opts.reviewFindings;
+  if (opts.applyAttempts !== undefined)
+    result.applyAttempts = opts.applyAttempts;
+  if (opts.verifyAttempts !== undefined)
+    result.verifyAttempts = opts.verifyAttempts;
+  if (opts.builderVerificationPhase !== undefined)
+    result.builderVerificationPhase = opts.builderVerificationPhase;
   return result;
 }
 
@@ -554,4 +563,176 @@ test("computeFromSnapshot: builder scores sorted before reviewer scores", () => 
   assert.equal(scores.length, 2);
   assert.equal(scores[0]?.role, "builder");
   assert.equal(scores[1]?.role, "reviewer");
+});
+
+// --- Patch EE: apply-retry + verify-retry yield -------------------------
+//
+// Each retry costs broker calls. The scorecard must surface the actual
+// rescue rate per (model, class) so an operator can decide whether the
+// budget is paying off — a model with rescueRate=0.0 is just burning
+// retries, while rescueRate=0.5+ proves the retry is doing meaningful
+// work for that model.
+
+test("computeFromSnapshot (Patch EE): applyRetry stats — used = applyAttempts > 1, rescued = used AND phase=collected", () => {
+  const scores = computeFromSnapshot({
+    workerRuns: [
+      // Model k1: 2 candidates triggered apply-retry; 1 was rescued
+      // (collected after the retry), 1 wasn't (apply_failed even
+      // after retry).
+      wr({
+        workerId: "b1",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "selected",
+        applyAttempts: 2,
+      }),
+      wr({
+        workerId: "b2",
+        modelKey: "nim:k1",
+        phase: "apply_failed",
+        ok: false,
+        arbiterOutcome: "excluded",
+        applyAttempts: 2,
+      }),
+      // First-shot success — applyAttempts=1, NOT counted as "used".
+      wr({
+        workerId: "b3",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        applyAttempts: 1,
+      }),
+    ],
+    reviewFindings: [],
+    arbiterDecisions: [],
+    modelEvents: [],
+    humanDecisions: [],
+  });
+  const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
+    ModelScore,
+    { role: "builder" }
+  >;
+  assert.equal(k1.applyRetriesUsed, 2, "two candidates had applyAttempts > 1");
+  assert.equal(k1.applyRetryRescues, 1, "only one of those reached collected");
+  assert.equal(k1.applyRetryRescueRate, 0.5);
+});
+
+test("computeFromSnapshot (Patch EE): verifyRetry stats — rescued = used AND builderVerificationPhase ∈ {passed, passed_typecheck_only}", () => {
+  const scores = computeFromSnapshot({
+    workerRuns: [
+      // k1: verify-retry triggered; final verifier verdict was passed.
+      wr({
+        workerId: "b1",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "selected",
+        verifyAttempts: 2,
+        builderVerificationPhase: "passed",
+      }),
+      // k1: verify-retry triggered; final verdict was passed_typecheck_only
+      // (test command not supplied, but typecheck rescued). Counts as rescue.
+      wr({
+        workerId: "b2",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        verifyAttempts: 2,
+        builderVerificationPhase: "passed_typecheck_only",
+      }),
+      // k1: verify-retry triggered; final verdict still tests_failed.
+      // Not a rescue — the retry didn't fix the failure.
+      wr({
+        workerId: "b3",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        verifyAttempts: 2,
+        builderVerificationPhase: "tests_failed",
+      }),
+      // k1: first-shot pass — verifyAttempts=1, NOT counted as "used".
+      wr({
+        workerId: "b4",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "not_selected",
+        verifyAttempts: 1,
+        builderVerificationPhase: "passed",
+      }),
+    ],
+    reviewFindings: [],
+    arbiterDecisions: [],
+    modelEvents: [],
+    humanDecisions: [],
+  });
+  const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
+    ModelScore,
+    { role: "builder" }
+  >;
+  assert.equal(k1.verifyRetriesUsed, 3);
+  assert.equal(k1.verifyRetryRescues, 2);
+  assert.ok(
+    k1.verifyRetryRescueRate !== null &&
+      Math.abs(k1.verifyRetryRescueRate - 2 / 3) < 1e-9,
+  );
+});
+
+test("computeFromSnapshot (Patch EE): rescueRate is null (not 0) when the retry path was never tripped", () => {
+  // Distinguishing "never tripped" from "always failed to rescue" is
+  // important for the operator: rescueRate=0.0 means "the retry tool
+  // is not earning its cost for this model" (actionable), while null
+  // means "no signal yet" (don't act on it).
+  const scores = computeFromSnapshot({
+    workerRuns: [
+      wr({
+        workerId: "b1",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "selected",
+        applyAttempts: 1,
+        verifyAttempts: 1,
+        builderVerificationPhase: "passed",
+      }),
+    ],
+    reviewFindings: [],
+    arbiterDecisions: [],
+    modelEvents: [],
+    humanDecisions: [],
+  });
+  const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
+    ModelScore,
+    { role: "builder" }
+  >;
+  assert.equal(k1.applyRetriesUsed, 0);
+  assert.equal(k1.verifyRetriesUsed, 0);
+  assert.equal(k1.applyRetryRescueRate, null);
+  assert.equal(k1.verifyRetryRescueRate, null);
+});
+
+test("computeFromSnapshot (Patch EE): pre-Patch-EE rows (no applyAttempts/verifyAttempts) → counts stay at 0 (regression)", () => {
+  // Backwards-compat: ledger rows written before Patch Y / BB don't
+  // carry these fields. Treat them as "retry never tripped" rather
+  // than crashing or counting them against the model.
+  const scores = computeFromSnapshot({
+    workerRuns: [
+      wr({
+        workerId: "b1",
+        modelKey: "nim:k1",
+        phase: "collected",
+        arbiterOutcome: "selected",
+        // applyAttempts / verifyAttempts / builderVerificationPhase all undefined
+      }),
+    ],
+    reviewFindings: [],
+    arbiterDecisions: [],
+    modelEvents: [],
+    humanDecisions: [],
+  });
+  const k1 = scores.find((s) => s.modelKey === "nim:k1") as Extract<
+    ModelScore,
+    { role: "builder" }
+  >;
+  assert.equal(k1.applyRetriesUsed, 0);
+  assert.equal(k1.verifyRetriesUsed, 0);
+  assert.equal(k1.applyRetryRescueRate, null);
+  assert.equal(k1.verifyRetryRescueRate, null);
 });

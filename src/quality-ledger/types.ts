@@ -44,6 +44,16 @@ export interface WorkerRunEvent extends BaseEvent {
   rubricScore?: number;
   rubricCoverage?: number;
   verificationPhase?: string;
+  // Patch EE: the BUILDER's own self-verification phase (Patch V/X),
+  // distinct from `verificationPhase` (which is the arbiter's rerun
+  // result from `rerunVerification.results`). Sourced from
+  // `candidate.builderVerification.phase`. Pinned separately so a
+  // downstream query can compute Patch BB's verify-retry yield —
+  // P(builderVerificationPhase ∈ {passed, passed_typecheck_only} |
+  // verifyAttempts > 1) — without conflating the builder's claim
+  // with the arbiter's rerun verdict (which may diverge by design;
+  // the arbiter is intentionally suspicious).
+  builderVerificationPhase?: string;
   // Patch Y populates this on candidates that took the S/R apply path:
   // 1 = first-shot success, 2 = succeeded after one structured-feedback
   // retry, 0 (or undefined) = no S/R path taken (unified-diff or pre-Y).

@@ -63,6 +63,10 @@
         "rubricScore": { "type": "number", "minimum": 0, "maximum": 1 },
         "rubricCoverage": { "type": "number", "minimum": 0, "maximum": 1 },
         "verificationPhase": { "type": "string" },
+        "builderVerificationPhase": {
+          "type": "string",
+          "description": "Patch EE: the builder's own self-verification phase (Patch V/X), sourced from candidate.builderVerification.phase. Distinct from `verificationPhase` (which is the arbiter's rerun verdict). Pinned separately so a downstream query can compute Patch BB's verify-retry yield without conflating builder self-report with arbiter rerun (which may diverge by design)."
+        },
         "applyAttempts": { "type": "integer", "minimum": 0 },
         "readFiles": {
           "type": "array",

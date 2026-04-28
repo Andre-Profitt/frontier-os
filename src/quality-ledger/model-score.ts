@@ -47,6 +47,23 @@ export interface BuilderModelScore {
   // Mean rubric score across collected candidates (NaN if none).
   meanRubricScore: number | null;
   meanRubricCoverage: number | null;
+  // Patch EE: retry-tool yield. Each retry costs broker calls; these
+  // stats let an operator decide whether the cost is paying off per
+  // model. "Used" = the candidate triggered a retry (Patch Y or BB).
+  // "Rescues" = used AND ended up in a healthy terminal state — for
+  // apply-retry, that's phase=collected (Patch Y only sets
+  // applyAttempts on the S/R path, and phase=collected proves apply
+  // ultimately succeeded); for verify-retry, that's
+  // builderVerificationPhase ∈ {passed, passed_typecheck_only}.
+  // RescueRate = rescues / used; null when used=0 (the model never
+  // tripped the retry path, so its yield is undefined — distinct from
+  // a 0% rate which means "always tripped, never rescued").
+  applyRetriesUsed: number;
+  applyRetryRescues: number;
+  applyRetryRescueRate: number | null;
+  verifyRetriesUsed: number;
+  verifyRetryRescues: number;
+  verifyRetryRescueRate: number | null;
 }
 
 export interface ReviewerModelScore {
@@ -118,6 +135,11 @@ function computeBuilderScores(
     highBugFindingsAgainst: number;
     rubricScores: number[];
     rubricCoverages: number[];
+    // Patch EE: retry-yield accumulators.
+    applyRetriesUsed: number;
+    applyRetryRescues: number;
+    verifyRetriesUsed: number;
+    verifyRetryRescues: number;
   };
   const accs = new Map<string, Acc>();
 
@@ -138,6 +160,10 @@ function computeBuilderScores(
       highBugFindingsAgainst: 0,
       rubricScores: [],
       rubricCoverages: [],
+      applyRetriesUsed: 0,
+      applyRetryRescues: 0,
+      verifyRetriesUsed: 0,
+      verifyRetryRescues: 0,
     };
     acc.candidates += 1;
     acc.packetIdsParticipated.add(wr.packetId);
@@ -165,6 +191,31 @@ function computeBuilderScores(
       acc.rubricScores.push(wr.rubricScore);
     if (typeof wr.rubricCoverage === "number")
       acc.rubricCoverages.push(wr.rubricCoverage);
+    // Patch EE: tally retry usage / rescue. A "rescue" requires the
+    // retry to have actually rescued the run; we use the cleanest
+    // observable proof per retry kind:
+    //   - Apply-retry: phase=collected (Patch Y only sets applyAttempts
+    //     on the S/R path, and phase=collected requires successful
+    //     apply + commit + collect).
+    //   - Verify-retry: builderVerificationPhase ∈ {passed,
+    //     passed_typecheck_only} (the builder's own verifier ended in a
+    //     healthy state). passed_typecheck_only counts because Patch BB
+    //     retry only fires for typecheck_failed/tests_failed; reaching
+    //     passed_typecheck_only after a retry means typecheck no longer
+    //     fails, which is the rescue we wanted.
+    if (typeof wr.applyAttempts === "number" && wr.applyAttempts > 1) {
+      acc.applyRetriesUsed += 1;
+      if (wr.phase === "collected") acc.applyRetryRescues += 1;
+    }
+    if (typeof wr.verifyAttempts === "number" && wr.verifyAttempts > 1) {
+      acc.verifyRetriesUsed += 1;
+      if (
+        wr.builderVerificationPhase === "passed" ||
+        wr.builderVerificationPhase === "passed_typecheck_only"
+      ) {
+        acc.verifyRetryRescues += 1;
+      }
+    }
     accs.set(key, acc);
   }
 
@@ -186,6 +237,18 @@ function computeBuilderScores(
       highBugFindingsAgainst: acc.highBugFindingsAgainst,
       meanRubricScore: mean(acc.rubricScores),
       meanRubricCoverage: mean(acc.rubricCoverages),
+      applyRetriesUsed: acc.applyRetriesUsed,
+      applyRetryRescues: acc.applyRetryRescues,
+      applyRetryRescueRate:
+        acc.applyRetriesUsed > 0
+          ? acc.applyRetryRescues / acc.applyRetriesUsed
+          : null,
+      verifyRetriesUsed: acc.verifyRetriesUsed,
+      verifyRetryRescues: acc.verifyRetryRescues,
+      verifyRetryRescueRate:
+        acc.verifyRetriesUsed > 0
+          ? acc.verifyRetryRescues / acc.verifyRetriesUsed
+          : null,
     };
   });
 }

@@ -31,6 +31,12 @@ function builderScore(over: Partial<BuilderModelScore>): BuilderModelScore {
     highBugFindingsAgainst: 0,
     meanRubricScore: null,
     meanRubricCoverage: null,
+    applyRetriesUsed: 0,
+    applyRetryRescues: 0,
+    applyRetryRescueRate: null,
+    verifyRetriesUsed: 0,
+    verifyRetryRescues: 0,
+    verifyRetryRescueRate: null,
     ...over,
   };
 }

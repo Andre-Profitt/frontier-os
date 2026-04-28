@@ -76,6 +76,13 @@ function makeBuilderPacket(opts: {
     applyAttempts?: number;
     readFiles?: string[];
     verifyAttempts?: number;
+    builderVerificationPhase?:
+      | "passed"
+      | "passed_typecheck_only"
+      | "typecheck_failed"
+      | "tests_failed"
+      | "skipped"
+      | "worktree_missing";
   }>;
   taskClass?: string;
 }): BuilderSwarmPacket {
@@ -115,6 +122,13 @@ function makeBuilderPacket(opts: {
       ...(c.readFiles !== undefined ? { readFiles: c.readFiles } : {}),
       ...(c.verifyAttempts !== undefined
         ? { verifyAttempts: c.verifyAttempts }
+        : {}),
+      ...(c.builderVerificationPhase !== undefined
+        ? {
+            builderVerification: {
+              phase: c.builderVerificationPhase,
+            },
+          }
         : {}),
     })),
     elapsedMs: 100,
@@ -736,6 +750,94 @@ test("buildEvents (Patch BB): verifyAttempts omitted when verification did not r
   assert.ok(wr);
   assert.equal(
     "verifyAttempts" in wr ? "field-present" : "field-absent",
+    "field-absent",
+  );
+});
+
+// --- buildEvents: builderVerificationPhase (Patch EE) -------------------
+//
+// Pre-Patch-EE the worker_run row carried only `verificationPhase`
+// (the arbiter's RERUN verdict). The builder's OWN self-verification
+// phase (Patch V/X) was dropped. Patch EE adds
+// `builderVerificationPhase` so the scorecard can compute Patch BB's
+// verify-retry yield without conflating the two — the arbiter is
+// intentionally suspicious and may disagree with the builder by
+// design.
+
+test("buildEvents (Patch EE): builderVerificationPhase surfaces from candidate.builderVerification.phase", () => {
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          builderVerificationPhase: "passed",
+        },
+        {
+          builderId: "b2",
+          modelKey: "nim:k2",
+          phase: "collected",
+          withPatch: true,
+          builderVerificationPhase: "tests_failed",
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 2,
+    }),
+  });
+  const phaseByBuilder = new Map(
+    events
+      .filter((e) => e.kind === "worker_run")
+      .map((e) => [
+        "workerId" in e ? e.workerId : "",
+        "builderVerificationPhase" in e
+          ? e.builderVerificationPhase
+          : undefined,
+      ]),
+  );
+  assert.equal(phaseByBuilder.get("b1"), "passed");
+  // tests_failed must round-trip distinct from "passed" — the
+  // scorecard rescue-rate math depends on this distinction.
+  assert.equal(phaseByBuilder.get("b2"), "tests_failed");
+});
+
+test("buildEvents (Patch EE): builderVerificationPhase omitted when builder didn't run verification", () => {
+  // No verification configured → no builderVerification on candidate
+  // → field absent on row. Distinguishes from "verifier ran and
+  // returned a phase," which the scorecard cares about.
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          // builderVerificationPhase omitted
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 1,
+    }),
+  });
+  const wr = events.find(
+    (e) => e.kind === "worker_run" && "workerId" in e && e.workerId === "b1",
+  );
+  assert.ok(wr);
+  assert.equal(
+    "builderVerificationPhase" in wr ? "field-present" : "field-absent",
     "field-absent",
   );
 });
