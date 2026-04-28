@@ -249,8 +249,12 @@ export async function runOrchestration(
     // into a prompt-ready string so reviewers can cross-check the
     // builder's claim against the diff. Empty string when the
     // builder didn't run verification (no typecheck/test commands).
+    // Patch CC: pass candidate.verifyAttempts so the formatter can
+    // surface a "verify-retry triggered" line when the final pass/fail
+    // verdict came from a retry, not a first-shot run.
     const builderVerificationRecord = formatBuilderVerificationRecord(
       candidate.builderVerification,
+      candidate.verifyAttempts,
     );
     const rp = await runReviewSwarm(
       { broker: deps.broker },
@@ -530,6 +534,13 @@ async function loadClassGates(
 //   ran_at: 2026-04-27T...
 export function formatBuilderVerificationRecord(
   v: CandidatePatch["builderVerification"],
+  // Patch CC: when the builder used Patch BB's verify-retry, the
+  // reviewer needs to see that the final passed/failed verdict is the
+  // result of a retry, not a first-shot result. Pass candidate.
+  // verifyAttempts here; the formatter renders a dedicated attempts
+  // line iff > 1. Optional + undefined-default so all pre-Patch-CC
+  // callers (Patch V/X tests and any external callers) keep working.
+  verifyAttempts?: number,
 ): string {
   if (!v) return "";
   const lines: string[] = [];
@@ -555,6 +566,13 @@ export function formatBuilderVerificationRecord(
   }
   if (v.ranAt !== undefined) {
     lines.push(`ran_at: ${v.ranAt}`);
+  }
+  // Patch CC: surface the verify-retry signal. Only render when > 1
+  // — first-shot passes don't need an "attempts: 1" line cluttering
+  // the prompt. Skipping undefined preserves the byte-for-byte output
+  // legacy callers depend on.
+  if (verifyAttempts !== undefined && verifyAttempts > 1) {
+    lines.push(`attempts: ${verifyAttempts} (verify-retry triggered)`);
   }
   return lines.join("\n");
 }

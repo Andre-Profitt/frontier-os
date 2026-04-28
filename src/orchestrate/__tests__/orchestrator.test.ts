@@ -1022,6 +1022,65 @@ test("formatBuilderVerificationRecord (Patch X): no phase falls back to exit-cod
   assert.match(out, /tests: exit_code=0/);
 });
 
+// --- Patch CC: verifyAttempts surfaced to reviewer prompt -------------
+
+test("formatBuilderVerificationRecord (Patch CC): verifyAttempts=2 renders an attempts line so reviewer knows retry was used", async () => {
+  // Patch BB lets the builder retry once when post-commit verify
+  // reports typecheck_failed/tests_failed. The reviewer should see
+  // whether this candidate passed first-shot or only after a
+  // verify-retry — that's an important quality signal (a "passed but
+  // needed retry" candidate carries different risk than a first-shot
+  // pass). Format the line on its own so the reviewer prompt makes
+  // it grep-able.
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord(
+    {
+      phase: "passed_typecheck_only",
+      typecheckExitCode: 0,
+      ranAt: "2026-04-27T13:00:00.000Z",
+    },
+    2,
+  );
+  assert.match(out, /phase: passed_typecheck_only/);
+  assert.match(
+    out,
+    /attempts: 2 \(verify-retry triggered\)/,
+    "verifyAttempts > 1 must surface so the reviewer can see this passed only after a retry",
+  );
+});
+
+test("formatBuilderVerificationRecord (Patch CC): verifyAttempts=1 omits attempts line (no clutter for first-shot pass)", async () => {
+  // The common case (first-shot pass) shouldn't waste reviewer-prompt
+  // budget on an "attempts: 1" line that adds zero information.
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord(
+    {
+      phase: "passed_typecheck_only",
+      typecheckExitCode: 0,
+      ranAt: "2026-04-27T13:00:00.000Z",
+    },
+    1,
+  );
+  assert.doesNotMatch(out, /attempts:/);
+});
+
+test("formatBuilderVerificationRecord (Patch CC): verifyAttempts undefined omits attempts line (regression — Patch V/X callers)", async () => {
+  // Pre-Patch-CC callers pass only the first arg. The new optional
+  // second arg must default to undefined and produce no attempts line,
+  // so existing callers see byte-for-byte the same output.
+  const { formatBuilderVerificationRecord } =
+    await import("../orchestrator.ts");
+  const out = formatBuilderVerificationRecord({
+    phase: "passed",
+    typecheckExitCode: 0,
+    testExitCode: 0,
+    ranAt: "2026-04-27T13:00:00.000Z",
+  });
+  assert.doesNotMatch(out, /attempts:/);
+});
+
 // --- Patch S non-blocker: requireContextPack=true makes failure fatal --
 
 test("runOrchestration (Patch S): requireContextPack=true → context-pack failure throws OrchestrationError", async () => {
