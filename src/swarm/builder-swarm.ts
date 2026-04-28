@@ -35,6 +35,7 @@ import {
   checkSearchReplaceScope,
 } from "./diff-scope-checker.ts";
 import { verifyCandidate } from "../arbiter/verifier.ts";
+import type { VerificationResult } from "../arbiter/types.ts";
 import {
   parseSearchReplaceBlocks,
   applySearchReplaceBlocks,
@@ -94,6 +95,16 @@ export interface CandidatePatch {
   // reads. Empty/undefined means the model did not use the read tool
   // (or every request was denied).
   readFiles?: string[];
+  // Patch BB: number of times the verifier ran for this candidate
+  // (= number of post-commit verify cycles attempted). 1 = verified
+  // once (no verify-retry); 2 = verify failed once, retried, verified
+  // again. Set only when verification ran; undefined when neither
+  // typecheckCommand nor testCommand was supplied. Surfaced into the
+  // ledger so a downstream query can compute the verify-retry tool's
+  // actual yield: P(builderVerification.phase=passed | verifyAttempts=2)
+  // tells the operator whether the retry actually rescues failing
+  // verifies vs. the model just regenerating the same broken patch.
+  verifyAttempts?: number;
 }
 
 export interface BuilderSwarmInput {
@@ -143,6 +154,20 @@ export interface BuilderSwarmInput {
   // to disable the tool entirely — a READ_FILE response then surfaces
   // as no_diff_extracted. Independent budget from maxApplyRetries.
   maxReadFiles?: number;
+  // Patch BB: maximum verify-retry cycles per builder. Pre-Patch-BB,
+  // the builder ran verify once after commit and the result was strictly
+  // informational (Patch V). Patch BB makes verification actionable: on
+  // typecheck_failed/tests_failed, the runner rolls back the candidate's
+  // commit (`git reset --hard HEAD~1` in the worktree), augments the
+  // prompt with the verifier's stderr, and re-prompts the model for a
+  // second apply+commit+verify cycle. Default 1 (one retry). Set to 0
+  // to preserve pre-Patch-BB behavior: failed verify stays informational
+  // with no rollback. Independent budget from maxApplyRetries and
+  // maxReadFiles — each verify-retry cycle gets its own fresh apply
+  // and read budgets. Verify-retry only fires for typecheck_failed /
+  // tests_failed; passed / passed_typecheck_only / skipped /
+  // worktree_missing don't trigger retry.
+  maxVerifyRetries?: number;
   // Test seams.
   loadSkillImpl?: (taskClass: string) => Skill | null;
   loadPromptTemplateImpl?: (skill: Skill) => string;
@@ -251,6 +276,9 @@ export async function runBuilderSwarm(
         ...(input.maxReadFiles !== undefined
           ? { maxReadFiles: input.maxReadFiles }
           : {}),
+        ...(input.maxVerifyRetries !== undefined
+          ? { maxVerifyRetries: input.maxVerifyRetries }
+          : {}),
         ...(input.verifierImpl !== undefined
           ? { verifierImpl: input.verifierImpl }
           : {}),
@@ -312,6 +340,8 @@ interface RunOneBuilderInput {
   maxApplyRetries?: number;
   // Patch Z: READ_FILE budget (see BuilderSwarmInput).
   maxReadFiles?: number;
+  // Patch BB: verify-retry budget (see BuilderSwarmInput).
+  maxVerifyRetries?: number;
   verifierImpl?: typeof verifyCandidate;
   now: () => number;
   exec: GitRunner;
@@ -384,6 +414,11 @@ async function runOneBuilder(
   // are exhausted the next iteration falls into a return path.
   const maxApplyRetries = input.maxApplyRetries ?? 1;
   const maxReadFiles = input.maxReadFiles ?? 1;
+  // Patch BB: verify-retry budget. Every iteration of verifyLoop is one
+  // post-commit verify cycle; a verify failure consumes one budget unit
+  // by rolling back the worktree and re-prompting with verifier feedback.
+  const maxVerifyRetries = input.maxVerifyRetries ?? 1;
+
   let promptToSend = baseFilledPrompt;
   let attempt = 0;
   // Counts S/R apply executions specifically (success or failure).
@@ -404,165 +439,250 @@ async function runOneBuilder(
   let applyAttempts: number | undefined;
   // Patch Z: relative paths the builder successfully read. Denied
   // requests are NOT recorded here; only successful reads.
-  const readFiles: string[] = [];
+  // Patch BB: was const, now let — verify-retry resets to a fresh array
+  // for each verify cycle (each cycle gets its own read budget).
+  let readFiles: string[] = [];
   // Combined transcript surfaced as rawText on multi-attempt apply
   // failure — operator/arbiter can salvage from any attempt.
+  // Persists across verifyLoop iterations so a verify-retry's transcript
+  // includes the original attempt + verifier output + the retry response.
   const transcript: string[] = [];
 
-  retryLoop: while (true) {
-    attempt++;
+  // Patch BB: hoisted out of the post-loop verification block so the
+  // verifyLoop can mutate them across iterations. builderVerification
+  // ends up reflecting the FINAL verifier call (the one whose result
+  // either passed or exhausted the retry budget). verifyAttempts
+  // counts post-commit verifier runs; undefined when verification was
+  // never requested.
+  let builderVerification: CandidatePatch["builderVerification"];
+  let verifyAttempts: number | undefined;
+  // Set true once the FIRST verifyLoop iteration completes its post-
+  // loop steps (commit + collect + verify). Used by the verify-retry
+  // branch to tell `continue verifyLoop` apart from the initial entry
+  // when reading state.
+  let collected: BuilderRun | undefined;
+  const verifierFn = input.verifierImpl ?? verifyCandidate;
+  const wantsVerification =
+    input.typecheckCommand !== undefined || input.testCommand !== undefined;
 
-    let brokerResult;
-    try {
-      brokerResult = await deps.broker.callClass({
-        taskClass: input.taskClass,
-        messages: [{ role: "user", content: promptToSend }],
-        // Pin to the assigned model when caller specified one. Without
-        // this pass-through, the broker is free to pick the same model
-        // for every builder, defeating the purpose of parallel multi-
-        // model attempts. (GPT Pro review Issue #1.)
-        ...(input.pinnedModelKey !== undefined
-          ? { modelOverride: input.pinnedModelKey }
-          : {}),
-      });
-    } catch (e) {
-      // Patch T: attribute the failure to the pinned model when
-      // present. Symmetric to Patch R blocker #3 for reviewers —
-      // without this, model_event aggregation drops pinned-builder
-      // failures (writer's "if (!c.modelKey) continue;" skips the
-      // row), making targeted-builder failure rates invisible in the
-      // scorecard.
-      if (attempt === 1) {
-        return failureWithRun(
-          run,
-          "broker_failed",
-          now() - tStart,
-          e,
-          input.pinnedModelKey,
-        );
-      }
-      // Patch Y: a retry's broker call exception does not escalate to
-      // broker_failed — the underlying problem was the prior apply
-      // failure. Surface that with a note about the lost retry call.
-      // Patch Z: applyAttempts is `applyCount` (number of actual S/R
-      // apply executions), not `attempt - 1` — the latter would
-      // wrongly count READ_FILE iterations toward apply attempts.
-      return {
-        builderId,
-        ...(modelKey !== undefined ? { modelKey } : {}),
-        runId: run.runId,
-        worktreePath: run.worktreePath,
-        ok: false,
-        phase: "apply_failed",
-        elapsedMs: now() - tStart,
-        errorMessage: `search/replace apply failed on attempt ${applyCount}; retry broker call failed: ${e instanceof Error ? e.message : String(e)}`,
-        rawText: transcript.join("\n\n"),
-        applyAttempts: applyCount,
-        ...(readFiles.length > 0 ? { readFiles } : {}),
-      };
-    }
+  // Patch BB: outer loop wraps the existing apply/commit/collect/verify
+  // sequence. On a typecheck_failed/tests_failed verifier outcome with
+  // budget remaining, this loop rolls back the worktree, re-prompts
+  // with verifier feedback, and re-enters the inner retryLoop for a
+  // fresh broker → S/R → apply → commit → verify cycle. Termination
+  // is guaranteed: every continue verifyLoop consumes one verify-retry
+  // budget unit, and once the budget is exhausted the verify decision
+  // falls through to break verifyLoop.
+  verifyLoop: while (true) {
+    retryLoop: while (true) {
+      attempt++;
 
-    if (!brokerResult.ok || !brokerResult.selected) {
-      if (attempt === 1) {
-        return {
-          builderId,
+      let brokerResult;
+      try {
+        brokerResult = await deps.broker.callClass({
+          taskClass: input.taskClass,
+          messages: [{ role: "user", content: promptToSend }],
+          // Pin to the assigned model when caller specified one. Without
+          // this pass-through, the broker is free to pick the same model
+          // for every builder, defeating the purpose of parallel multi-
+          // model attempts. (GPT Pro review Issue #1.)
           ...(input.pinnedModelKey !== undefined
-            ? { modelKey: input.pinnedModelKey }
+            ? { modelOverride: input.pinnedModelKey }
             : {}),
-          runId: run.runId,
-          worktreePath: run.worktreePath,
-          ok: false,
-          phase: "broker_failed",
-          elapsedMs: now() - tStart,
-          errorMessage: `broker rejected: ${brokerResult.rejected ?? "unknown"}`,
-        };
-      }
-      return {
-        builderId,
-        ...(modelKey !== undefined ? { modelKey } : {}),
-        runId: run.runId,
-        worktreePath: run.worktreePath,
-        ok: false,
-        phase: "apply_failed",
-        elapsedMs: now() - tStart,
-        errorMessage: `search/replace apply failed on attempt ${applyCount}; retry broker call rejected: ${brokerResult.rejected ?? "unknown"}`,
-        rawText: transcript.join("\n\n"),
-        applyAttempts: applyCount,
-        ...(readFiles.length > 0 ? { readFiles } : {}),
-      };
-    }
-
-    modelKey = brokerResult.selected.modelKey;
-    rawText = brokerResult.selectedResponse?.text ?? "";
-    transcript.push(`=== Attempt ${attempt} broker response ===\n${rawText}`);
-
-    // ---- 4. extract changes ----
-    // Patch M: prefer search/replace blocks over unified diff. First-
-    // real-orchestration data showed line-number drift in unified
-    // diffs is the dominant failure mode for general 70B models. S/R
-    // sidesteps it by matching exact text instead of line numbers. If
-    // the model emitted S/R blocks (Aider-style), apply them and
-    // synthesize a unified diff from `git diff` for the scope check +
-    // downstream pipeline. If no S/R blocks are present, fall back to
-    // unified-diff extraction (kept for backwards compat / models
-    // that prefer it). Unified-diff path does NOT participate in the
-    // retry loop.
-    const srParse = parseSearchReplaceBlocks(rawText);
-    if (srParse.blocks.length > 0) {
-      // ---- 4.4 PRE-APPLY scope check (Patch R blocker #1) ----
-      // The S/R applier writes to disk during apply. If we deferred
-      // the scope check until after apply (the way the unified-diff
-      // path does), an out-of-scope candidate would mutate the
-      // worktree before being rejected — leaving a dirty tree behind
-      // even though the candidate is reported as scope_rejected.
-      // Catch it here on the parsed block file paths so we never
-      // write rejected blocks. Scope rejection is NOT retried; the
-      // model picked the wrong file, not the wrong text.
-      if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+        });
+      } catch (e) {
+        // Patch T: attribute the failure to the pinned model when
+        // present. Symmetric to Patch R blocker #3 for reviewers —
+        // without this, model_event aggregation drops pinned-builder
+        // failures (writer's "if (!c.modelKey) continue;" skips the
+        // row), making targeted-builder failure rates invisible in the
+        // scorecard.
+        if (attempt === 1) {
+          return failureWithRun(
+            run,
+            "broker_failed",
+            now() - tStart,
+            e,
+            input.pinnedModelKey,
+          );
+        }
+        // Patch Y: a retry's broker call exception does not escalate to
+        // broker_failed — the underlying problem was the prior apply
+        // failure. Surface that with a note about the lost retry call.
+        // Patch Z: applyAttempts is `applyCount` (number of actual S/R
+        // apply executions), not `attempt - 1` — the latter would
+        // wrongly count READ_FILE iterations toward apply attempts.
         return {
           builderId,
-          modelKey,
+          ...(modelKey !== undefined ? { modelKey } : {}),
           runId: run.runId,
           worktreePath: run.worktreePath,
           ok: false,
-          phase: "scope_rejected",
+          phase: "apply_failed",
           elapsedMs: now() - tStart,
-          errorMessage:
-            "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
-          rawText,
-        };
-      }
-      const srScope = checkSearchReplaceScope(srParse.blocks, {
-        touchList: input.touchList,
-      });
-      if (!srScope.allowed) {
-        return {
-          builderId,
-          modelKey,
-          runId: run.runId,
-          worktreePath: run.worktreePath,
-          ok: false,
-          phase: "scope_rejected",
-          elapsedMs: now() - tStart,
-          errorMessage: `S/R scope rejected — ${srScope.reason}`,
-          rawText,
+          errorMessage: `search/replace apply failed on attempt ${applyCount}; retry broker call failed: ${e instanceof Error ? e.message : String(e)}`,
+          rawText: transcript.join("\n\n"),
+          applyAttempts: applyCount,
+          ...(readFiles.length > 0 ? { readFiles } : {}),
         };
       }
 
-      const apply = applySearchReplaceBlocks(run.worktreePath, srParse.blocks);
-      // Patch Z: bump applyCount on every actual apply execution.
-      // Pre-Patch-Z this was implicit in `attempt`; with READ_FILE
-      // also bumping `attempt`, we need a separate counter for
-      // applies so the retry budget stays scoped to apply failures.
-      applyCount++;
-      if (apply.ok) {
-        // Synthesize a unified diff from the worktree state. The scope
-        // checker + downstream metadata extraction (file list,
-        // sizeBytes, line counts) consume unified diffs; rather than
-        // duplicate that logic for S/R, generate the canonical form
-        // once.
-        const diffRes = exec(["diff", "--no-color"], run.worktreePath);
-        if (!diffRes.ok) {
+      if (!brokerResult.ok || !brokerResult.selected) {
+        if (attempt === 1) {
+          return {
+            builderId,
+            ...(input.pinnedModelKey !== undefined
+              ? { modelKey: input.pinnedModelKey }
+              : {}),
+            runId: run.runId,
+            worktreePath: run.worktreePath,
+            ok: false,
+            phase: "broker_failed",
+            elapsedMs: now() - tStart,
+            errorMessage: `broker rejected: ${brokerResult.rejected ?? "unknown"}`,
+          };
+        }
+        return {
+          builderId,
+          ...(modelKey !== undefined ? { modelKey } : {}),
+          runId: run.runId,
+          worktreePath: run.worktreePath,
+          ok: false,
+          phase: "apply_failed",
+          elapsedMs: now() - tStart,
+          errorMessage: `search/replace apply failed on attempt ${applyCount}; retry broker call rejected: ${brokerResult.rejected ?? "unknown"}`,
+          rawText: transcript.join("\n\n"),
+          applyAttempts: applyCount,
+          ...(readFiles.length > 0 ? { readFiles } : {}),
+        };
+      }
+
+      modelKey = brokerResult.selected.modelKey;
+      rawText = brokerResult.selectedResponse?.text ?? "";
+      transcript.push(`=== Attempt ${attempt} broker response ===\n${rawText}`);
+
+      // ---- 4. extract changes ----
+      // Patch M: prefer search/replace blocks over unified diff. First-
+      // real-orchestration data showed line-number drift in unified
+      // diffs is the dominant failure mode for general 70B models. S/R
+      // sidesteps it by matching exact text instead of line numbers. If
+      // the model emitted S/R blocks (Aider-style), apply them and
+      // synthesize a unified diff from `git diff` for the scope check +
+      // downstream pipeline. If no S/R blocks are present, fall back to
+      // unified-diff extraction (kept for backwards compat / models
+      // that prefer it). Unified-diff path does NOT participate in the
+      // retry loop.
+      const srParse = parseSearchReplaceBlocks(rawText);
+      if (srParse.blocks.length > 0) {
+        // ---- 4.4 PRE-APPLY scope check (Patch R blocker #1) ----
+        // The S/R applier writes to disk during apply. If we deferred
+        // the scope check until after apply (the way the unified-diff
+        // path does), an out-of-scope candidate would mutate the
+        // worktree before being rejected — leaving a dirty tree behind
+        // even though the candidate is reported as scope_rejected.
+        // Catch it here on the parsed block file paths so we never
+        // write rejected blocks. Scope rejection is NOT retried; the
+        // model picked the wrong file, not the wrong text.
+        if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+          return {
+            builderId,
+            modelKey,
+            runId: run.runId,
+            worktreePath: run.worktreePath,
+            ok: false,
+            phase: "scope_rejected",
+            elapsedMs: now() - tStart,
+            errorMessage:
+              "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
+            rawText,
+          };
+        }
+        const srScope = checkSearchReplaceScope(srParse.blocks, {
+          touchList: input.touchList,
+        });
+        if (!srScope.allowed) {
+          return {
+            builderId,
+            modelKey,
+            runId: run.runId,
+            worktreePath: run.worktreePath,
+            ok: false,
+            phase: "scope_rejected",
+            elapsedMs: now() - tStart,
+            errorMessage: `S/R scope rejected — ${srScope.reason}`,
+            rawText,
+          };
+        }
+
+        const apply = applySearchReplaceBlocks(
+          run.worktreePath,
+          srParse.blocks,
+        );
+        // Patch Z: bump applyCount on every actual apply execution.
+        // Pre-Patch-Z this was implicit in `attempt`; with READ_FILE
+        // also bumping `attempt`, we need a separate counter for
+        // applies so the retry budget stays scoped to apply failures.
+        applyCount++;
+        if (apply.ok) {
+          // Synthesize a unified diff from the worktree state. The scope
+          // checker + downstream metadata extraction (file list,
+          // sizeBytes, line counts) consume unified diffs; rather than
+          // duplicate that logic for S/R, generate the canonical form
+          // once.
+          const diffRes = exec(["diff", "--no-color"], run.worktreePath);
+          if (!diffRes.ok) {
+            return {
+              builderId,
+              modelKey,
+              runId: run.runId,
+              worktreePath: run.worktreePath,
+              ok: false,
+              phase: "apply_failed",
+              elapsedMs: now() - tStart,
+              errorMessage: `search/replace applied but git diff failed: ${diffRes.stderr.trim() || "unknown"}`,
+              rawText,
+              applyAttempts: applyCount,
+              ...(readFiles.length > 0 ? { readFiles } : {}),
+            };
+          }
+          diffText = diffRes.stdout;
+          if (diffText.trim().length === 0) {
+            // S/R applied but produced an empty diff — model said
+            // "replace X with X" effectively. Treat as no-op rather
+            // than success. Not retried (a syntactically-valid no-op
+            // is not a recoverable failure mode; the model chose to
+            // do nothing).
+            return {
+              builderId,
+              modelKey,
+              runId: run.runId,
+              worktreePath: run.worktreePath,
+              ok: false,
+              phase: "no_diff_extracted",
+              elapsedMs: now() - tStart,
+              errorMessage:
+                "search/replace blocks applied but resulted in zero net changes",
+              rawText,
+              applyAttempts: applyCount,
+              ...(readFiles.length > 0 ? { readFiles } : {}),
+            };
+          }
+          alreadyApplied = true;
+          applyAttempts = applyCount;
+          break retryLoop;
+        }
+
+        // Patch Y: S/R apply failed — retry if budget allows. The
+        // structured error from applySearchReplaceBlocks ("SEARCH text
+        // not found", "matches N locations", etc.) becomes the model-
+        // facing feedback. This is the dominant local-70B failure
+        // mode (model paraphrased a line instead of copying it
+        // verbatim from the rendered touch list).
+        const applyError = apply.error ?? "unknown";
+        transcript.push(
+          `=== Attempt ${attempt} apply error ===\n${applyError}`,
+        );
+        if (applyCount > maxApplyRetries) {
           return {
             builderId,
             modelKey,
@@ -571,48 +691,166 @@ async function runOneBuilder(
             ok: false,
             phase: "apply_failed",
             elapsedMs: now() - tStart,
-            errorMessage: `search/replace applied but git diff failed: ${diffRes.stderr.trim() || "unknown"}`,
-            rawText,
-            applyAttempts: applyCount,
-            ...(readFiles.length > 0 ? { readFiles } : {}),
-          };
-        }
-        diffText = diffRes.stdout;
-        if (diffText.trim().length === 0) {
-          // S/R applied but produced an empty diff — model said
-          // "replace X with X" effectively. Treat as no-op rather
-          // than success. Not retried (a syntactically-valid no-op
-          // is not a recoverable failure mode; the model chose to
-          // do nothing).
-          return {
-            builderId,
-            modelKey,
-            runId: run.runId,
-            worktreePath: run.worktreePath,
-            ok: false,
-            phase: "no_diff_extracted",
-            elapsedMs: now() - tStart,
             errorMessage:
-              "search/replace blocks applied but resulted in zero net changes",
-            rawText,
+              applyCount > 1
+                ? `search/replace apply failed (after ${applyCount} attempts): ${applyError}`
+                : `search/replace apply failed: ${applyError}`,
+            rawText: transcript.join("\n\n"),
             applyAttempts: applyCount,
             ...(readFiles.length > 0 ? { readFiles } : {}),
           };
         }
-        alreadyApplied = true;
-        applyAttempts = applyCount;
+        promptToSend = buildRetryPrompt(baseFilledPrompt, rawText, applyError);
+        continue retryLoop;
+      }
+
+      // No S/R blocks — try unified-diff extraction. Unified diff path
+      // does NOT participate in apply retry (line-drift has its own
+      // path; Patch M).
+      const diffs = extractDiffs(rawText);
+      if (diffs.length > 0) {
+        diffText = diffs[0]!.diff;
         break retryLoop;
       }
 
-      // Patch Y: S/R apply failed — retry if budget allows. The
-      // structured error from applySearchReplaceBlocks ("SEARCH text
-      // not found", "matches N locations", etc.) becomes the model-
-      // facing feedback. This is the dominant local-70B failure
-      // mode (model paraphrased a line instead of copying it
-      // verbatim from the rendered touch list).
-      const applyError = apply.error ?? "unknown";
-      transcript.push(`=== Attempt ${attempt} apply error ===\n${applyError}`);
-      if (applyCount > maxApplyRetries) {
+      // Patch Z: no S/R, no diff — check for a READ_FILE tool request.
+      // When the model emits `READ_FILE: <relative-path>` (alone) it's
+      // asking for context outside its touch list. Read it (after path
+      // safety checks) and re-prompt with the contents appended. Both
+      // success and denial cost one slot of `maxReadFiles` budget.
+      const readReq = parseReadFileRequest(rawText);
+      if (
+        readReq !== null &&
+        maxReadFiles > 0 &&
+        readFileCalls < maxReadFiles
+      ) {
+        readFileCalls++;
+        const validation = validateReadPath(readReq.path, run.worktreePath);
+        if (!validation.ok) {
+          transcript.push(
+            `=== Attempt ${attempt} READ_FILE: ${readReq.path} (denied: ${validation.error}) ===`,
+          );
+          promptToSend = buildReadFileErrorPrompt(
+            baseFilledPrompt,
+            readReq.path,
+            validation.error,
+          );
+          continue retryLoop;
+        }
+        const fileResult = readFileForBuilder(validation.absolutePath);
+        if (!fileResult.ok) {
+          // Path validated but the read itself failed (rare — file
+          // disappeared mid-flight, permissions). Treat as a denial.
+          transcript.push(
+            `=== Attempt ${attempt} READ_FILE: ${readReq.path} (read failed: ${fileResult.error}) ===`,
+          );
+          promptToSend = buildReadFileErrorPrompt(
+            baseFilledPrompt,
+            readReq.path,
+            fileResult.error,
+          );
+          continue retryLoop;
+        }
+        readFiles.push(readReq.path);
+        transcript.push(
+          `=== Attempt ${attempt} READ_FILE: ${readReq.path} (granted, ${fileResult.contents.length} bytes${fileResult.truncated ? " — truncated" : ""}) ===`,
+        );
+        promptToSend = buildReadFileFollowup(
+          baseFilledPrompt,
+          readReq.path,
+          fileResult.contents,
+          fileResult.truncated,
+        );
+        continue retryLoop;
+      }
+
+      // No S/R, no diff, no usable READ_FILE — surface as no_diff_extracted.
+      // Either the model didn't deliver any actionable content, or it
+      // tried to use the read tool when the budget was already
+      // exhausted (or disabled by maxReadFiles=0).
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "no_diff_extracted",
+        elapsedMs: now() - tStart,
+        errorMessage:
+          readReq !== null
+            ? `READ_FILE requested but read budget exhausted (maxReadFiles=${maxReadFiles}, used=${readFileCalls})`
+            : "broker returned text with no S/R blocks, no fenced diff, and no inline diff header",
+        rawText,
+        ...(readFiles.length > 0 ? { readFiles } : {}),
+      };
+    }
+
+    // Loop exited via break — diffText is set; modelKey is set;
+    // applyAttempts is set iff the S/R path completed.
+    if (diffText === undefined || modelKey === undefined) {
+      // Unreachable: every break above sets these. Defensive throw to
+      // turn a future regression into a loud failure rather than a
+      // silent undefined-deref downstream.
+      throw new BuilderSwarmError(
+        `runOneBuilder: invariant violated — loop exited without diffText/modelKey (builderId=${builderId})`,
+      );
+    }
+
+    // ---- 4.5 scope check (Patch C / GPT Pro Issue #4 + E2 blocker #2) ----
+    // The model was prompted with a touchList, but it is free to ignore
+    // that and patch unrelated files. The arbiter would otherwise see an
+    // overbroad patch as if it were the requested change. We reject before
+    // git apply so the worktree stays clean.
+    //
+    // E2: empty touchList without allowUnscopedDiff → reject up front.
+    // Pre-E2 this silently disabled the gate, which made the swarm look
+    // scope-controlled when it wasn't. Operator MUST opt out explicitly
+    // (BuilderSwarmInput.allowUnscopedDiff = true) and the evidence
+    // records that choice via the errorMessage / phase combination.
+    if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "scope_rejected",
+        elapsedMs: now() - tStart,
+        errorMessage:
+          "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
+        rawText,
+      };
+    }
+    const scopeCheck = checkDiffScope(diffText, {
+      touchList: input.touchList,
+    });
+    if (!scopeCheck.allowed) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "scope_rejected",
+        elapsedMs: now() - tStart,
+        errorMessage: `diff scope rejected — ${scopeCheck.reason}`,
+        rawText,
+      };
+    }
+
+    // ---- 5. git apply --check then apply ----
+    // Skipped when search/replace already wrote the changes directly —
+    // re-applying via `git apply` would fail with "patch already applied".
+    if (!alreadyApplied) {
+      const applyOutcome = applyDiffToWorktree({
+        diffText,
+        worktreePath: run.worktreePath,
+        builderId,
+        exec,
+      });
+      if (!applyOutcome.ok) {
+        // Unified-diff path: applyAttempts intentionally NOT set —
+        // retry only covers the S/R path (Patch Y).
         return {
           builderId,
           modelKey,
@@ -621,263 +859,163 @@ async function runOneBuilder(
           ok: false,
           phase: "apply_failed",
           elapsedMs: now() - tStart,
-          errorMessage:
-            applyCount > 1
-              ? `search/replace apply failed (after ${applyCount} attempts): ${applyError}`
-              : `search/replace apply failed: ${applyError}`,
-          rawText: transcript.join("\n\n"),
-          applyAttempts: applyCount,
-          ...(readFiles.length > 0 ? { readFiles } : {}),
+          errorMessage: applyOutcome.message,
+          rawText,
         };
       }
-      promptToSend = buildRetryPrompt(baseFilledPrompt, rawText, applyError);
-      continue retryLoop;
     }
 
-    // No S/R blocks — try unified-diff extraction. Unified diff path
-    // does NOT participate in apply retry (line-drift has its own
-    // path; Patch M).
-    const diffs = extractDiffs(rawText);
-    if (diffs.length > 0) {
-      diffText = diffs[0]!.diff;
-      break retryLoop;
-    }
-
-    // Patch Z: no S/R, no diff — check for a READ_FILE tool request.
-    // When the model emits `READ_FILE: <relative-path>` (alone) it's
-    // asking for context outside its touch list. Read it (after path
-    // safety checks) and re-prompt with the contents appended. Both
-    // success and denial cost one slot of `maxReadFiles` budget.
-    const readReq = parseReadFileRequest(rawText);
-    if (readReq !== null && maxReadFiles > 0 && readFileCalls < maxReadFiles) {
-      readFileCalls++;
-      const validation = validateReadPath(readReq.path, run.worktreePath);
-      if (!validation.ok) {
-        transcript.push(
-          `=== Attempt ${attempt} READ_FILE: ${readReq.path} (denied: ${validation.error}) ===`,
-        );
-        promptToSend = buildReadFileErrorPrompt(
-          baseFilledPrompt,
-          readReq.path,
-          validation.error,
-        );
-        continue retryLoop;
-      }
-      const fileResult = readFileForBuilder(validation.absolutePath);
-      if (!fileResult.ok) {
-        // Path validated but the read itself failed (rare — file
-        // disappeared mid-flight, permissions). Treat as a denial.
-        transcript.push(
-          `=== Attempt ${attempt} READ_FILE: ${readReq.path} (read failed: ${fileResult.error}) ===`,
-        );
-        promptToSend = buildReadFileErrorPrompt(
-          baseFilledPrompt,
-          readReq.path,
-          fileResult.error,
-        );
-        continue retryLoop;
-      }
-      readFiles.push(readReq.path);
-      transcript.push(
-        `=== Attempt ${attempt} READ_FILE: ${readReq.path} (granted, ${fileResult.contents.length} bytes${fileResult.truncated ? " — truncated" : ""}) ===`,
-      );
-      promptToSend = buildReadFileFollowup(
-        baseFilledPrompt,
-        readReq.path,
-        fileResult.contents,
-        fileResult.truncated,
-      );
-      continue retryLoop;
-    }
-
-    // No S/R, no diff, no usable READ_FILE — surface as no_diff_extracted.
-    // Either the model didn't deliver any actionable content, or it
-    // tried to use the read tool when the budget was already
-    // exhausted (or disabled by maxReadFiles=0).
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "no_diff_extracted",
-      elapsedMs: now() - tStart,
-      errorMessage:
-        readReq !== null
-          ? `READ_FILE requested but read budget exhausted (maxReadFiles=${maxReadFiles}, used=${readFileCalls})`
-          : "broker returned text with no S/R blocks, no fenced diff, and no inline diff header",
-      rawText,
-      ...(readFiles.length > 0 ? { readFiles } : {}),
-    };
-  }
-
-  // Loop exited via break — diffText is set; modelKey is set;
-  // applyAttempts is set iff the S/R path completed.
-  if (diffText === undefined || modelKey === undefined) {
-    // Unreachable: every break above sets these. Defensive throw to
-    // turn a future regression into a loud failure rather than a
-    // silent undefined-deref downstream.
-    throw new BuilderSwarmError(
-      `runOneBuilder: invariant violated — loop exited without diffText/modelKey (builderId=${builderId})`,
-    );
-  }
-
-  // ---- 4.5 scope check (Patch C / GPT Pro Issue #4 + E2 blocker #2) ----
-  // The model was prompted with a touchList, but it is free to ignore
-  // that and patch unrelated files. The arbiter would otherwise see an
-  // overbroad patch as if it were the requested change. We reject before
-  // git apply so the worktree stays clean.
-  //
-  // E2: empty touchList without allowUnscopedDiff → reject up front.
-  // Pre-E2 this silently disabled the gate, which made the swarm look
-  // scope-controlled when it wasn't. Operator MUST opt out explicitly
-  // (BuilderSwarmInput.allowUnscopedDiff = true) and the evidence
-  // records that choice via the errorMessage / phase combination.
-  if (input.touchList.length === 0 && !input.allowUnscopedDiff) {
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "scope_rejected",
-      elapsedMs: now() - tStart,
-      errorMessage:
-        "no touchList supplied and allowUnscopedDiff=false — unscoped diffs are rejected by default; pass allowUnscopedDiff: true to opt out (operator's explicit choice)",
-      rawText,
-    };
-  }
-  const scopeCheck = checkDiffScope(diffText, {
-    touchList: input.touchList,
-  });
-  if (!scopeCheck.allowed) {
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "scope_rejected",
-      elapsedMs: now() - tStart,
-      errorMessage: `diff scope rejected — ${scopeCheck.reason}`,
-      rawText,
-    };
-  }
-
-  // ---- 5. git apply --check then apply ----
-  // Skipped when search/replace already wrote the changes directly —
-  // re-applying via `git apply` would fail with "patch already applied".
-  if (!alreadyApplied) {
-    const applyOutcome = applyDiffToWorktree({
-      diffText,
+    // ---- 6. commit ----
+    const commitOk = commitInWorktree({
       worktreePath: run.worktreePath,
       builderId,
+      taskId: input.taskId,
       exec,
     });
-    if (!applyOutcome.ok) {
-      // Unified-diff path: applyAttempts intentionally NOT set —
-      // retry only covers the S/R path (Patch Y).
+    if (!commitOk.ok) {
+      // The diff is applied but uncommitted. We still try to collect — the
+      // BuilderRun.diff captures uncommitted changes via `git diff
+      // baseCommit..HEAD` only if committed; uncommitted edits would need
+      // `git diff baseCommit` (no `..HEAD`). For v1 we surface this as
+      // applied-but-not-committed.
       return {
         builderId,
         modelKey,
         runId: run.runId,
         worktreePath: run.worktreePath,
         ok: false,
-        phase: "apply_failed",
+        phase: "applied",
         elapsedMs: now() - tStart,
-        errorMessage: applyOutcome.message,
+        errorMessage: `applied but commit failed: ${commitOk.message}`,
         rawText,
+        ...(applyAttempts !== undefined ? { applyAttempts } : {}),
+        ...(readFiles.length > 0 ? { readFiles } : {}),
+        ...(verifyAttempts !== undefined ? { verifyAttempts } : {}),
       };
     }
-  }
 
-  // ---- 6. commit ----
-  const commitOk = commitInWorktree({
-    worktreePath: run.worktreePath,
-    builderId,
-    taskId: input.taskId,
-    exec,
-  });
-  if (!commitOk.ok) {
-    // The diff is applied but uncommitted. We still try to collect — the
-    // BuilderRun.diff captures uncommitted changes via `git diff
-    // baseCommit..HEAD` only if committed; uncommitted edits would need
-    // `git diff baseCommit` (no `..HEAD`). For v1 we surface this as
-    // applied-but-not-committed.
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "applied",
-      elapsedMs: now() - tStart,
-      errorMessage: `applied but commit failed: ${commitOk.message}`,
-      rawText,
-      ...(applyAttempts !== undefined ? { applyAttempts } : {}),
-      ...(readFiles.length > 0 ? { readFiles } : {}),
-    };
-  }
+    // ---- 7. collect ----
+    try {
+      collected = deps.worktreeManager.collect(run.runId);
+    } catch (e) {
+      return {
+        builderId,
+        modelKey,
+        runId: run.runId,
+        worktreePath: run.worktreePath,
+        ok: false,
+        phase: "committed",
+        elapsedMs: now() - tStart,
+        errorMessage:
+          "applied + committed but worktreeManager.collect failed: " +
+          (e instanceof Error ? e.message : String(e)),
+        rawText,
+        ...(applyAttempts !== undefined ? { applyAttempts } : {}),
+        ...(readFiles.length > 0 ? { readFiles } : {}),
+        ...(verifyAttempts !== undefined ? { verifyAttempts } : {}),
+      };
+    }
 
-  // ---- 7. collect ----
-  let collected: BuilderRun;
-  try {
-    collected = deps.worktreeManager.collect(run.runId);
-  } catch (e) {
-    return {
-      builderId,
-      modelKey,
-      runId: run.runId,
-      worktreePath: run.worktreePath,
-      ok: false,
-      phase: "committed",
-      elapsedMs: now() - tStart,
-      errorMessage:
-        "applied + committed but worktreeManager.collect failed: " +
-        (e instanceof Error ? e.message : String(e)),
-      rawText,
-      ...(applyAttempts !== undefined ? { applyAttempts } : {}),
-      ...(readFiles.length > 0 ? { readFiles } : {}),
-    };
-  }
+    // ---- 8. self-verification (Patch V) ----
+    // Runs typecheck/test inside the worktree and stores exit codes
+    // on the candidate so the orchestrator can format a structured
+    // verification record for the reviewer prompt's
+    // {{builderVerificationRecord}} slot. Pre-Patch-BB this was strictly
+    // informational — verification failures did NOT change candidate.phase
+    // or candidate.ok. Patch BB makes verification ACTIONABLE for the
+    // builder: on typecheck_failed/tests_failed with retry budget, we
+    // roll back the commit and re-prompt with verifier feedback. After
+    // the retry budget is exhausted, the Patch V semantic is preserved:
+    // a still-failing verify stays informational, the candidate is
+    // collected with builderVerification reflecting the FINAL verifier
+    // call. The arbiter independently re-verifies (defense in depth).
+    // Skipped when neither command is set, preserving the prior behavior
+    // for callers that don't ask for self-verification.
+    if (wantsVerification) {
+      const result = verifierFn({
+        builderId,
+        worktreePath: run.worktreePath,
+        ...(input.typecheckCommand !== undefined
+          ? { typecheckCommand: input.typecheckCommand }
+          : {}),
+        ...(input.testCommand !== undefined
+          ? { testCommand: input.testCommand }
+          : {}),
+      });
+      builderVerification = {
+        // Patch X: include the verifier's phase verdict so the reviewer
+        // sees "passed_typecheck_only" vs "passed" vs concrete failures
+        // rather than having to infer from exit codes alone.
+        ...(result.phase !== undefined ? { phase: result.phase } : {}),
+        ...(result.typecheckExitCode !== undefined
+          ? { typecheckExitCode: result.typecheckExitCode }
+          : {}),
+        ...(result.testExitCode !== undefined
+          ? { testExitCode: result.testExitCode }
+          : {}),
+        ...(result.ranAt !== undefined ? { ranAt: result.ranAt } : {}),
+      };
+      verifyAttempts = (verifyAttempts ?? 0) + 1;
 
-  // ---- 8. self-verification (Patch V) ----
-  // Runs typecheck/test inside the worktree and stores exit codes
-  // on the candidate so the orchestrator can format a structured
-  // verification record for the reviewer prompt's
-  // {{builderVerificationRecord}} slot. Strictly informational —
-  // verification failures do NOT change candidate.phase or candidate.ok.
-  // The arbiter independently re-verifies later (defense in depth).
-  // Skipped when neither command is set, preserving the prior
-  // behavior for callers that don't ask for self-verification.
-  let builderVerification: CandidatePatch["builderVerification"];
-  const verifierFn = input.verifierImpl ?? verifyCandidate;
-  const wantsVerification =
-    input.typecheckCommand !== undefined || input.testCommand !== undefined;
-  if (wantsVerification) {
-    const result = verifierFn({
-      builderId,
-      worktreePath: run.worktreePath,
-      ...(input.typecheckCommand !== undefined
-        ? { typecheckCommand: input.typecheckCommand }
-        : {}),
-      ...(input.testCommand !== undefined
-        ? { testCommand: input.testCommand }
-        : {}),
-    });
-    builderVerification = {
-      // Patch X: include the verifier's phase verdict so the reviewer
-      // sees "passed_typecheck_only" vs "passed" vs concrete failures
-      // rather than having to infer from exit codes alone.
-      ...(result.phase !== undefined ? { phase: result.phase } : {}),
-      ...(result.typecheckExitCode !== undefined
-        ? { typecheckExitCode: result.typecheckExitCode }
-        : {}),
-      ...(result.testExitCode !== undefined
-        ? { testExitCode: result.testExitCode }
-        : {}),
-      ...(result.ranAt !== undefined ? { ranAt: result.ranAt } : {}),
-    };
+      // Patch BB: verification-aware retry. Only typecheck_failed and
+      // tests_failed trigger retry — passed / passed_typecheck_only /
+      // skipped / worktree_missing are terminal. The retry rolls the
+      // worktree back to the pre-attempt state with `git reset --hard
+      // HEAD~1` so the next iteration's apply runs against the SAME base
+      // tree the model was prompted with. If reset fails (rare — git
+      // crash mid-flight), we fall through to the Patch V semantic and
+      // surface the failed verify on the collected candidate without
+      // attempting the retry.
+      const recoverable =
+        result.phase === "typecheck_failed" || result.phase === "tests_failed";
+      const hasBudget = verifyAttempts <= maxVerifyRetries;
+      if (recoverable && hasBudget) {
+        const reset = exec(["reset", "--hard", "HEAD~1"], run.worktreePath);
+        if (reset.ok) {
+          transcript.push(
+            `=== Verify failed on attempt ${verifyAttempts} (phase=${result.phase}); rolled back HEAD~1 and re-prompting ===\n${formatVerifierFeedback(result)}`,
+          );
+          promptToSend = buildVerifyRetryPrompt(
+            baseFilledPrompt,
+            rawText,
+            result,
+          );
+          // Reset inner-loop state for the next verify cycle. Each retry
+          // gets a FRESH apply-retry budget and read budget — these are
+          // per-cycle, not per-builder, by design (the verifier feedback
+          // is a fundamentally different input than the prior cycle's
+          // touch-list rendering, so the model deserves a clean slate).
+          // transcript persists across cycles; verifyAttempts persists
+          // (the running count).
+          modelKey = undefined;
+          rawText = "";
+          diffText = undefined;
+          alreadyApplied = false;
+          applyAttempts = undefined;
+          readFiles = [];
+          attempt = 0;
+          applyCount = 0;
+          readFileCalls = 0;
+          collected = undefined;
+          continue verifyLoop;
+        }
+        // Reset failed — log it on the transcript so an operator can
+        // see why the retry was abandoned, then fall through to break.
+        transcript.push(
+          `=== Verify failed on attempt ${verifyAttempts}, but rollback (\`git reset --hard HEAD~1\`) failed: ${reset.stderr.trim().slice(0, 400) || "unknown"}; abandoning verify-retry ===`,
+        );
+      }
+    }
+    break verifyLoop;
+  } // end verifyLoop
+
+  // collected is set above on the success path through verifyLoop.
+  // The defensive throw turns any future restructure that breaks this
+  // invariant into a loud failure rather than a silent undefined-deref.
+  if (collected === undefined) {
+    throw new BuilderSwarmError(
+      `runOneBuilder: invariant violated — verifyLoop exited without collected (builderId=${builderId})`,
+    );
   }
 
   return {
@@ -893,6 +1031,7 @@ async function runOneBuilder(
     ...(builderVerification !== undefined ? { builderVerification } : {}),
     ...(applyAttempts !== undefined ? { applyAttempts } : {}),
     ...(readFiles.length > 0 ? { readFiles } : {}),
+    ...(verifyAttempts !== undefined ? { verifyAttempts } : {}),
   };
 }
 
@@ -1079,6 +1218,56 @@ function buildReadFileErrorPrompt(
     `You requested to read \`${requestedPath}\`, but the runner rejected it: ${reason}.`,
     "",
     "Either request a different file (must be a relative path inside the worktree, no `..` traversal, must exist) OR proceed directly with your search/replace blocks for the touch-list files.",
+  ].join("\n");
+}
+
+// Patch BB: format the verifier result for the verify-retry prompt and
+// transcript. The model needs the phase + the actual stderr from the
+// failing tool — exit codes alone are not enough to fix a typecheck or
+// test failure. Output is plain-text; the caller wraps it in a fenced
+// section.
+function formatVerifierFeedback(result: VerificationResult): string {
+  const lines: string[] = [`phase: ${result.phase}`];
+  if (result.typecheckExitCode !== undefined) {
+    lines.push(`typecheckExitCode: ${result.typecheckExitCode}`);
+  }
+  if (result.testExitCode !== undefined) {
+    lines.push(`testExitCode: ${result.testExitCode}`);
+  }
+  if (result.typecheckStderr) {
+    lines.push("typecheckStderr:", result.typecheckStderr);
+  }
+  if (result.testStderr) {
+    lines.push("testStderr:", result.testStderr);
+  }
+  return lines.join("\n");
+}
+
+// Patch BB: build the verify-retry prompt by appending verifier
+// feedback to the original user message. The previous commit has
+// already been rolled back via `git reset --hard HEAD~1`, so the model
+// is producing S/R against the SAME base tree the touch-list rendering
+// reflects. We tell the model that explicitly so it doesn't try to
+// account for a phantom prior change.
+function buildVerifyRetryPrompt(
+  originalPrompt: string,
+  previousResponse: string,
+  verifierResult: VerificationResult,
+): string {
+  return [
+    originalPrompt,
+    "",
+    "## PREVIOUS ATTEMPT BUILT-AND-COMMITTED, BUT VERIFICATION FAILED",
+    "",
+    "Your previous response was:",
+    "",
+    previousResponse,
+    "",
+    "When applied + committed to the worktree, the verifier reported:",
+    "",
+    formatVerifierFeedback(verifierResult),
+    "",
+    "The commit has been rolled back to the pre-attempt state, so the touch-list file contents shown above are the CURRENT tree state (not the post-attempt state). Re-read those contents, then emit corrected search/replace blocks that fix the verification failure. Address the actual error from the verifier output above; do not just regenerate the same patch.",
   ].join("\n");
 }
 

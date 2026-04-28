@@ -1149,6 +1149,11 @@ test("runBuilderSwarm (Patch V): typecheck failure recorded on candidate but pha
   // what the builder *claims*. The arbiter's verifier independently
   // re-runs verification later. So a failed self-verification doesn't
   // fail the candidate; phase remains collected.
+  //
+  // Patch BB: pin maxVerifyRetries=0 to preserve the pre-Patch-BB
+  // single-shot verify behavior this test asserts. With the new
+  // default of 1, verify failure now triggers a retry — that path is
+  // covered by the Patch BB tests below.
   const broker = new StubBroker();
   broker.enqueue({
     ok: true,
@@ -1168,6 +1173,7 @@ test("runBuilderSwarm (Patch V): typecheck failure recorded on candidate but pha
         baseBranch: "main",
         touchList: ["added.ts"],
         typecheckCommand: ["echo", "stub"],
+        maxVerifyRetries: 0,
         loadSkillImpl: () => syntheticSkill(),
         loadPromptTemplateImpl: () => TEMPLATE,
         verifierImpl: ({ builderId }) => ({
@@ -1970,6 +1976,480 @@ test("runBuilderSwarm (Patch Z): packet with readFiles validates against builder
       },
     );
     assert.deepEqual(packet.candidates[0]?.readFiles, ["helper.txt"]);
+    const valid = validateBuilderSwarmPacket(packet);
+    if (!valid) {
+      console.error(JSON.stringify(validateBuilderSwarmPacket.errors, null, 2));
+    }
+    assert.equal(valid, true);
+  } finally {
+    cleanup();
+  }
+});
+
+// --- Patch BB: verification-aware retry --------------------------------
+//
+// Patch V populated builderVerification (typecheck/test exit codes after
+// commit) but the result was strictly informational — a typecheck or
+// test failure didn't change the candidate's phase. Patch BB makes
+// verification actionable for the builder: when verify fails AND the
+// retry budget allows, the runner rolls back the candidate's commit
+// (`git reset --hard HEAD~1` inside the worktree), augments the prompt
+// with the verifier's stderr, and re-prompts the model. The second
+// attempt's apply+commit+verify runs from a clean base.
+//
+// Default `maxVerifyRetries` = 1 (one retry). Set to 0 to preserve the
+// pre-Patch-BB legacy: a failed verify stays informational and does not
+// trigger a re-prompt. Independent budget from `maxApplyRetries` and
+// `maxReadFiles` — verify-retry resets the inner state for a fresh
+// broker → apply → commit cycle.
+//
+// `verifyAttempts` = number of times the verifier ran (= number of
+// post-commit cycles attempted). Set only when verification ran;
+// undefined when typecheckCommand/testCommand were both absent.
+
+test("runBuilderSwarm (Patch BB): verify fails on attempt 1, succeeds on attempt 2 → collected, verifyAttempts=2, retry prompt carries verifier stderr", async () => {
+  const broker = new StubBroker();
+  // Attempt 1: a valid S/R that applies + commits cleanly. The verifier
+  // (stub) will pretend typecheck failed for this commit.
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-1 (will fail typecheck per the stub verifier)
+>>>>>>> REPLACE
+`,
+  });
+  // Attempt 2: a different S/R; verifier will pretend typecheck passes.
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-2 (passes typecheck)
+>>>>>>> REPLACE
+`,
+  });
+  let verifierCalls = 0;
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-bb-verify-retry-success",
+        taskDescription: "Patch BB verify-retry path",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        typecheckCommand: ["echo", "stub"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId, worktreePath }) => {
+          verifierCalls++;
+          if (verifierCalls === 1) {
+            return {
+              builderId,
+              worktreePath,
+              phase: "typecheck_failed" as const,
+              typecheckExitCode: 1,
+              typecheckStderr:
+                "src/foo.ts:42:8 - error TS2304: Cannot find name 'undefinedSymbol'.",
+              ranAt: "2026-04-27T00:00:00.000Z",
+            };
+          }
+          return {
+            builderId,
+            worktreePath,
+            phase: "passed_typecheck_only" as const,
+            typecheckExitCode: 0,
+            ranAt: "2026-04-27T00:00:01.000Z",
+          };
+        },
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(
+      c?.ok,
+      true,
+      `expected collected after verify-retry, got ${c?.phase}: ${c?.errorMessage}`,
+    );
+    assert.equal(c?.phase, "collected");
+    assert.equal(
+      c?.verifyAttempts,
+      2,
+      "verifyAttempts must reflect both verifier runs",
+    );
+    assert.equal(
+      c?.builderVerification?.phase,
+      "passed_typecheck_only",
+      "final builderVerification reflects the SECOND (passing) verifier call",
+    );
+    // Two broker calls; second prompt carries verifier feedback.
+    assert.equal(broker.callLog.length, 2);
+    const retryPrompt = broker.callLog[1]?.prompt ?? "";
+    assert.match(
+      retryPrompt,
+      /VERIFICATION FAILED/i,
+      "retry prompt must call out verification failure",
+    );
+    assert.match(
+      retryPrompt,
+      /typecheck_failed/,
+      "retry prompt must include the verifier phase",
+    );
+    assert.match(
+      retryPrompt,
+      /Cannot find name 'undefinedSymbol'/,
+      "retry prompt must surface the verifier stderr so the model can fix the actual error",
+    );
+    assert.match(
+      retryPrompt,
+      /attempt-1 \(will fail typecheck per the stub verifier\)/,
+      "retry prompt must include the previous response so the model can correct it",
+    );
+    assert.match(
+      retryPrompt,
+      /rolled back/i,
+      "retry prompt must tell the model the prior commit was rolled back",
+    );
+    // Worktree state: the final committed README must reflect attempt 2,
+    // not attempt 1 — proves rollback worked and second commit landed.
+    const worktreeRoot = c?.worktreePath ?? "";
+    const finalReadme = readFileSync(
+      resolve(worktreeRoot, "README.md"),
+      "utf8",
+    );
+    assert.match(finalReadme, /attempt-2 \(passes typecheck\)/);
+    assert.doesNotMatch(
+      finalReadme,
+      /attempt-1/,
+      "rollback must wipe attempt-1's content",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch BB): verify fails on both attempts → collected with final failed verification, verifyAttempts=2 (informational fail preserved)", async () => {
+  // Patch V semantic: verification failures don't fail the candidate.
+  // Patch BB layers retry on top — but if the retry ALSO fails verify,
+  // we land back in the Patch-V state: collected + ok:true + the final
+  // failed verification recorded for the reviewer to chew on. The
+  // arbiter independently re-verifies; the operator can disagree.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-1
+>>>>>>> REPLACE
+`,
+  });
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-2
+>>>>>>> REPLACE
+`,
+  });
+  let verifierCalls = 0;
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-bb-verify-retry-fail",
+        taskDescription: "both attempts fail verify",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        typecheckCommand: ["echo", "stub"],
+        testCommand: ["echo", "stub"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId, worktreePath }) => {
+          verifierCalls++;
+          return {
+            builderId,
+            worktreePath,
+            phase: "tests_failed" as const,
+            typecheckExitCode: 0,
+            testExitCode: 1,
+            testStderr: `failure on call #${verifierCalls}`,
+            ranAt: `2026-04-27T00:00:0${verifierCalls}.000Z`,
+          };
+        },
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "collected", "Patch V semantic preserved");
+    assert.equal(c?.ok, true);
+    assert.equal(c?.verifyAttempts, 2);
+    assert.equal(
+      c?.builderVerification?.phase,
+      "tests_failed",
+      "final builderVerification reflects the second (still-failing) call",
+    );
+    assert.equal(c?.builderVerification?.testExitCode, 1);
+    assert.equal(broker.callLog.length, 2, "broker called twice (one retry)");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch BB): verify passes on first attempt → verifyAttempts=1, no retry (regression)", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# happy path
+>>>>>>> REPLACE
+`,
+  });
+  // No second response queued; if the swarm calls broker twice the
+  // second call returns "all-attempts-failed" which would surface
+  // differently. The assertion below catches that regression.
+  let verifierCalls = 0;
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-bb-no-retry-needed",
+        taskDescription: "verify passes first time",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        typecheckCommand: ["echo", "stub"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId, worktreePath }) => {
+          verifierCalls++;
+          return {
+            builderId,
+            worktreePath,
+            phase: "passed_typecheck_only" as const,
+            typecheckExitCode: 0,
+            ranAt: "2026-04-27T00:00:00.000Z",
+          };
+        },
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.ok, true);
+    assert.equal(c?.phase, "collected");
+    assert.equal(c?.verifyAttempts, 1);
+    assert.equal(
+      verifierCalls,
+      1,
+      "verifier called exactly once on the happy path",
+    );
+    assert.equal(broker.callLog.length, 1, "no extra broker call");
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch BB): maxVerifyRetries=0 → no retry on verify failure (legacy Patch V behavior preserved)", async () => {
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-1 only
+>>>>>>> REPLACE
+`,
+  });
+  // Queue a second response we should NOT consume.
+  broker.enqueue({
+    ok: true,
+    assistantText: `(would-be-retry — must not be sent)`,
+  });
+  let verifierCalls = 0;
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-bb-disable-verify-retry",
+        taskDescription: "verify-retry disabled",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        typecheckCommand: ["echo", "stub"],
+        maxVerifyRetries: 0,
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId, worktreePath }) => {
+          verifierCalls++;
+          return {
+            builderId,
+            worktreePath,
+            phase: "typecheck_failed" as const,
+            typecheckExitCode: 1,
+            typecheckStderr: "stub failure",
+            ranAt: "2026-04-27T00:00:00.000Z",
+          };
+        },
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(
+      c?.phase,
+      "collected",
+      "Patch V: failed verify is informational",
+    );
+    assert.equal(c?.ok, true);
+    assert.equal(
+      c?.verifyAttempts,
+      1,
+      "with verify-retry disabled, verifyAttempts stays at 1",
+    );
+    assert.equal(c?.builderVerification?.phase, "typecheck_failed");
+    assert.equal(verifierCalls, 1, "verifier ran exactly once");
+    assert.equal(broker.callLog.length, 1, "broker called exactly once");
+    assert.equal(
+      broker.queueRemaining(),
+      1,
+      "second queued response must remain unconsumed",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch BB): no typecheck/test command → verifyAttempts undefined (regression)", async () => {
+  // When the orchestrator doesn't ask for verification, verifyAttempts
+  // must NOT appear on the candidate. Symmetric to the Patch V
+  // regression test — a quiet new field can't pollute legacy callers.
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# replaced
+>>>>>>> REPLACE
+`,
+  });
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-bb-no-verifier",
+        taskDescription: "no verifier",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        // typecheckCommand / testCommand omitted
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+      },
+    );
+    const c = packet.candidates[0];
+    assert.equal(c?.phase, "collected");
+    assert.equal(c?.builderVerification, undefined);
+    assert.equal(
+      c?.verifyAttempts,
+      undefined,
+      "verifyAttempts must be undefined when verification did not run",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("runBuilderSwarm (Patch BB): packet with verifyAttempts validates against builder-swarm-packet schema", async () => {
+  const { validateBuilderSwarmPacket } = await import("../../schemas.ts");
+  const broker = new StubBroker();
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-1
+>>>>>>> REPLACE
+`,
+  });
+  broker.enqueue({
+    ok: true,
+    assistantText: `README.md
+<<<<<<< SEARCH
+# test
+=======
+# attempt-2
+>>>>>>> REPLACE
+`,
+  });
+  let verifierCalls = 0;
+  const { repoRoot, cleanup } = makeRepo();
+  try {
+    const packet = await runBuilderSwarm(
+      {
+        broker: broker as unknown as InferenceBroker,
+        worktreeManager: buildManager(repoRoot),
+      },
+      {
+        taskId: "patch-bb-schema",
+        taskDescription: "schema check",
+        touchList: ["README.md"],
+        builderCount: 1,
+        baseBranch: "main",
+        typecheckCommand: ["echo", "stub"],
+        loadSkillImpl: () => syntheticSkill(),
+        loadPromptTemplateImpl: () => TEMPLATE,
+        verifierImpl: ({ builderId, worktreePath }) => {
+          verifierCalls++;
+          if (verifierCalls === 1) {
+            return {
+              builderId,
+              worktreePath,
+              phase: "typecheck_failed" as const,
+              typecheckExitCode: 1,
+              ranAt: "2026-04-27T00:00:00.000Z",
+            };
+          }
+          return {
+            builderId,
+            worktreePath,
+            phase: "passed_typecheck_only" as const,
+            typecheckExitCode: 0,
+            ranAt: "2026-04-27T00:00:01.000Z",
+          };
+        },
+      },
+    );
+    assert.equal(packet.candidates[0]?.verifyAttempts, 2);
     const valid = validateBuilderSwarmPacket(packet);
     if (!valid) {
       console.error(JSON.stringify(validateBuilderSwarmPacket.errors, null, 2));

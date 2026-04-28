@@ -158,6 +158,9 @@ export function buildEvents(
         ? { applyAttempts: c.applyAttempts }
         : {}),
       ...(c.readFiles !== undefined ? { readFiles: c.readFiles } : {}),
+      ...(c.verifyAttempts !== undefined
+        ? { verifyAttempts: c.verifyAttempts }
+        : {}),
       arbiterOutcome,
       ...(review
         ? {

@@ -75,6 +75,7 @@ function makeBuilderPacket(opts: {
     withPatch?: boolean;
     applyAttempts?: number;
     readFiles?: string[];
+    verifyAttempts?: number;
   }>;
   taskClass?: string;
 }): BuilderSwarmPacket {
@@ -112,6 +113,9 @@ function makeBuilderPacket(opts: {
         ? { applyAttempts: c.applyAttempts }
         : {}),
       ...(c.readFiles !== undefined ? { readFiles: c.readFiles } : {}),
+      ...(c.verifyAttempts !== undefined
+        ? { verifyAttempts: c.verifyAttempts }
+        : {}),
     })),
     elapsedMs: 100,
   };
@@ -649,6 +653,91 @@ test("buildEvents (Patch AA): readFiles surfaces from candidate to worker_run ro
   assert.deepEqual(wrByBuilder.get("b1"), ["src/helper.ts", "src/types.ts"]);
   assert.deepEqual(wrByBuilder.get("b2"), ["lib/util.ts"]);
   assert.deepEqual(wrByBuilder.get("b3"), ["src/foo.ts"]);
+});
+
+// --- buildEvents: verifyAttempts (Patch BB) -----------------------------
+//
+// Patch BB (verification-aware retry) sets candidate.verifyAttempts on
+// any candidate whose verifier ran. 1 = first-shot verify; 2 = verified,
+// failed (typecheck_failed/tests_failed), rolled back, re-prompted,
+// verified again. The writer must surface this onto the worker_run row
+// so downstream queries can compute the verify-retry tool's yield:
+// P(builderVerification.phase=passed | verifyAttempts=2) per (model,
+// class). Without this field the retry's value is unmeasurable.
+
+test("buildEvents (Patch BB): verifyAttempts surfaces from candidate to worker_run row", () => {
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          verifyAttempts: 2, // succeeded after one verify-retry
+        },
+        {
+          builderId: "b2",
+          modelKey: "nim:k2",
+          phase: "collected",
+          withPatch: true,
+          verifyAttempts: 1, // first-shot verify pass
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 2,
+    }),
+  });
+  const wrByBuilder = new Map(
+    events
+      .filter((e) => e.kind === "worker_run")
+      .map((e) => [
+        "workerId" in e ? e.workerId : "",
+        "verifyAttempts" in e ? e.verifyAttempts : undefined,
+      ]),
+  );
+  assert.equal(wrByBuilder.get("b1"), 2);
+  assert.equal(wrByBuilder.get("b2"), 1);
+});
+
+test("buildEvents (Patch BB): verifyAttempts omitted when verification did not run", () => {
+  // Candidates whose orchestration didn't request verification have no
+  // verifyAttempts field. Surface that as field-absent (not 0, not
+  // null) so downstream stats can distinguish "no verifier configured"
+  // from "verifier ran once and passed".
+  const events = buildEvents({
+    packet: makePacket(),
+    builderPacket: makeBuilderPacket({
+      candidates: [
+        {
+          builderId: "b1",
+          modelKey: "nim:k1",
+          phase: "collected",
+          withPatch: true,
+          // verifyAttempts omitted on purpose
+        },
+      ],
+    }),
+    reviewPackets: [],
+    arbiterDecision: makeArbiterDecision({
+      decision: "accept",
+      selectedBuilderId: "b1",
+      candidatesEvaluated: 1,
+    }),
+  });
+  const wr = events.find(
+    (e) => e.kind === "worker_run" && "workerId" in e && e.workerId === "b1",
+  );
+  assert.ok(wr);
+  assert.equal(
+    "verifyAttempts" in wr ? "field-present" : "field-absent",
+    "field-absent",
+  );
 });
 
 test("buildEvents (Patch AA): readFiles omitted when candidate did not use READ_FILE tool", () => {

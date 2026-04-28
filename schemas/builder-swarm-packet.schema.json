@@ -116,6 +116,11 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Patch Z: relative paths the builder successfully read via the READ_FILE tool. Denied requests (path traversal, non-existent file, budget exhausted) are NOT recorded here — only successful reads. Order preserved; duplicates allowed if the model legitimately re-reads. Empty array means the model did not use the read tool (or every request was denied)."
+        },
+        "verifyAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Patch BB: number of times the verifier ran for this candidate (= number of post-commit verify cycles attempted). 1 means verified once (no verify-retry); >1 means verify failed at least once and was retried after rollback + re-prompt with verifier feedback. Set only when verification ran (typecheckCommand or testCommand was supplied); undefined otherwise."
         }
       }
     }

@@ -69,6 +69,11 @@
           "items": { "type": "string" },
           "description": "Patch AA: relative paths the builder successfully read via the READ_FILE tool (Patch Z). Empty/undefined means the model did not use the tool. Surfaced into the ledger so a downstream query can compute the tool's actual yield: P(applied | readFiles.length > 0) vs P(applied | readFiles.length === 0) per (model, class)."
         },
+        "verifyAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Patch BB: number of times the verifier ran for this candidate (= number of post-commit verify cycles attempted). 1 = verified once; >1 = retried after typecheck_failed/tests_failed rollback. Surfaced into the ledger so a downstream query can compute the verify-retry tool's actual yield: P(builderVerification.phase=passed | verifyAttempts=2) vs first-shot pass rate per (model, class). Without this field the retry's value is unmeasurable."
+        },
         "arbiterOutcome": {
           "enum": ["selected", "not_selected", "excluded"]
         },

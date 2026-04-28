@@ -91,6 +91,25 @@ Optional read tool (Patch Z) — use sparingly:
 - If your touch list and the readable workspace already give you what
   you need, SKIP this tool and go straight to search/replace.
 
+Verification-aware retry (Patch BB) — what to do if you see verifier
+feedback in your prompt:
+
+- If the prompt contains a section titled "PREVIOUS ATTEMPT BUILT-AND-
+  COMMITTED, BUT VERIFICATION FAILED", your previous patch applied and
+  committed cleanly but the post-commit typecheck or test run failed.
+  The runner has already rolled the worktree back to the pre-attempt
+  state via `git reset --hard HEAD~1`, so the touch-list file contents
+  in the prompt reflect the CURRENT tree (not the post-attempt state).
+
+- The prompt includes the verifier's `phase`, exit codes, and stderr
+  (truncated). Read that output, identify the actual error (a missing
+  symbol, a wrong type, a failing assertion), and emit corrected
+  search/replace blocks that fix it. Do NOT just regenerate the same
+  patch — the verifier will fail the same way.
+
+- You get one verify-retry by default. After that, the candidate is
+  surfaced to the arbiter with the failed verification recorded.
+
 Search/replace block format (one block per edit; multiple blocks ok).
 The filename line MUST be one of the EXACT paths from your touch
 list above (NOT a placeholder like "path/to/file.ts"). Schematic:

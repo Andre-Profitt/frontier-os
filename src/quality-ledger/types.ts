@@ -60,6 +60,14 @@ export interface WorkerRunEvent extends BaseEvent {
   // we'd see accept rates change but couldn't attribute the delta to
   // the tool vs other concurrent changes.
   readFiles?: string[];
+  // Patch BB: number of post-commit verify cycles attempted for this
+  // candidate. 1 = single verify (no retry), 2 = verified, failed
+  // (typecheck_failed/tests_failed), rolled back, re-prompted, verified
+  // again. Surfaced so a downstream query can compute the verify-retry
+  // tool's yield: P(builderVerification.phase=passed | verifyAttempts=2)
+  // tells the operator whether the retry actually rescues failing
+  // verifies vs. the model just regenerating the same broken patch.
+  verifyAttempts?: number;
   // selected = arbiter chose this candidate
   // not_selected = arbiter evaluated but didn't pick (or escalated)
   // excluded = candidate didn't reach phase=collected, never evaluated
