@@ -1,0 +1,80 @@
+{
+  "factoryId": "ai-radar",
+  "version": "v0",
+  "activation": {
+    "defaultMode": "shadow",
+    "modeNotes": "observe=read sources.json only, no fetch; shadow=fetch + write to evidence/, no public artifacts/; active=fetch + write digest+items to artifacts/; disabled=short-circuit. Runtime override: factories/ai-radar/state/mode.json. Kill-switch: factories/ai-radar/state/disabled (wins over everything).",
+    "staleAfterHours": 26,
+    "modeFile": "factories/ai-radar/state/mode.json",
+    "latestRunFile": "factories/ai-radar/state/latest-run.json"
+  },
+  "summary": "Upstream intelligence factory. Collects official AI ecosystem signals (changelogs, GitHub releases, arXiv) and emits structured RadarItem records plus a daily markdown digest. No upgrade application; that is PR #9+.",
+  "objective": "Convert external AI ecosystem changes into deduplicated, trust-tiered RadarItems plus a daily markdown digest, without mutating other frontier-os surfaces.",
+  "collection": {
+    "sourceRegistry": "factories/ai-radar/sources.json",
+    "fetchTimeoutMs": 10000,
+    "maxBytesPerSource": 5000000,
+    "userAgent": "frontier-os-ai-radar/0.1 (+https://github.com/Andre-Profitt/frontier-os)"
+  },
+  "policy": {
+    "approvalClass": 1,
+    "allowedActions": [
+      "http-get-registered-source",
+      "parse-feed",
+      "write-evidence",
+      "write-digest",
+      "write-state",
+      "write-ledger-entry"
+    ],
+    "forbiddenActions": [
+      "auto-apply-upgrade",
+      "open-pr",
+      "modify-model-policy",
+      "modify-skills",
+      "modify-taste",
+      "modify-launchd",
+      "edit-other-factories",
+      "fetch-unregistered-source",
+      "discord-fetch",
+      "youtube-fetch"
+    ],
+    "killSwitchFile": "factories/ai-radar/state/disabled",
+    "escalation": [
+      "fetch-failure-rate-above-threshold",
+      "stale-state-file",
+      "schema-mismatch-on-normalize",
+      "kill-switch-active"
+    ]
+  },
+  "classification": {
+    "perSource": {
+      "ok": "fetch HTTP 200 AND parsed AND >=1 normalized item",
+      "stale": "fetch HTTP 200 AND parsed AND 0 new items (all already-seen)",
+      "failed": "fetch non-200 OR parse error OR normalize error",
+      "ambiguous": "timeout or fetch aborted"
+    },
+    "final": {
+      "passed": "all sources ok|stale AND digest written AND killSwitchActive==false",
+      "failed": "any source failed",
+      "ambiguous": "any source ambiguous OR killSwitchActive==true"
+    }
+  },
+  "outputs": {
+    "digestPath": "factories/ai-radar/artifacts/radar-digest-{YYYY-MM-DD}.md",
+    "itemsPath": "factories/ai-radar/artifacts/radar-items-{YYYY-MM-DD}.json",
+    "seenItemsPath": "factories/ai-radar/state/seen-items.json"
+  },
+  "scope": {
+    "explicitlyOutOfScopeForV0": [
+      "discord-collection",
+      "youtube-collection",
+      "claim-extraction",
+      "upgrade-planner",
+      "model-policy-update",
+      "skill-update",
+      "taste-anti-example-emission",
+      "auto-merge"
+    ],
+    "deferredTo": "PR-9 (upgrade planner + claim ledger), PR-10 (Discord+YouTube collectors), PR-11 (model policy loop), PR-12 (cloud witness)"
+  }
+}

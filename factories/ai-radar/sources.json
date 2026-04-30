@@ -1,0 +1,75 @@
+{
+  "schema": "frontier_os.radar.source_registry.v1",
+  "sources": [
+    {
+      "id": "openai-api-changelog",
+      "kind": "official_changelog",
+      "trustTier": "official",
+      "name": "OpenAI API Changelog",
+      "url": "https://platform.openai.com/docs/changelog",
+      "fetch": { "type": "http_get", "format": "html" },
+      "cadence": "daily",
+      "topicHints": ["model_release", "agent_runtime", "infra"]
+    },
+    {
+      "id": "gemini-api-release-notes",
+      "kind": "official_changelog",
+      "trustTier": "official",
+      "name": "Google Gemini API Release Notes",
+      "url": "https://ai.google.dev/gemini-api/docs/changelog",
+      "fetch": { "type": "http_get", "format": "html" },
+      "cadence": "daily",
+      "topicHints": ["model_release", "agent_runtime"]
+    },
+    {
+      "id": "claude-code-changelog",
+      "kind": "github_raw_changelog",
+      "trustTier": "official",
+      "name": "Anthropic Claude Code CHANGELOG.md",
+      "url": "https://raw.githubusercontent.com/anthropics/claude-code/refs/heads/main/CHANGELOG.md",
+      "fetch": { "type": "http_get", "format": "markdown" },
+      "cadence": "daily",
+      "topicHints": ["coding_agent", "agent_runtime", "security"]
+    },
+    {
+      "id": "anthropic-claude-code-releases",
+      "kind": "github_release",
+      "trustTier": "official",
+      "name": "anthropics/claude-code GitHub Releases",
+      "url": "https://api.github.com/repos/anthropics/claude-code/releases",
+      "fetch": { "type": "http_get", "format": "json", "githubApi": true },
+      "cadence": "daily",
+      "topicHints": ["coding_agent"]
+    },
+    {
+      "id": "modelcontextprotocol-spec-releases",
+      "kind": "github_release",
+      "trustTier": "official",
+      "name": "modelcontextprotocol/specification GitHub Releases",
+      "url": "https://api.github.com/repos/modelcontextprotocol/specification/releases",
+      "fetch": { "type": "http_get", "format": "json", "githubApi": true },
+      "cadence": "daily",
+      "topicHints": ["mcp", "security"]
+    },
+    {
+      "id": "arxiv-cs-ai-rss",
+      "kind": "paper",
+      "trustTier": "community",
+      "name": "arXiv cs.AI RSS",
+      "url": "http://export.arxiv.org/rss/cs.AI",
+      "fetch": { "type": "http_get", "format": "rss" },
+      "cadence": "daily",
+      "topicHints": ["research"]
+    },
+    {
+      "id": "arxiv-cs-cl-rss",
+      "kind": "paper",
+      "trustTier": "community",
+      "name": "arXiv cs.CL RSS",
+      "url": "http://export.arxiv.org/rss/cs.CL",
+      "fetch": { "type": "http_get", "format": "rss" },
+      "cadence": "daily",
+      "topicHints": ["research"]
+    }
+  ]
+}

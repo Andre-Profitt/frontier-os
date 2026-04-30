@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frontier-os.local/schemas/radar-source.schema.json",
+  "title": "FrontierOS AI Radar Source",
+  "description": "One entry in factories/ai-radar/sources.json. v0 only registers Tier 1 official sources; Discord and YouTube collectors land in PR #10 with their own permission models.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "kind",
+    "trustTier",
+    "name",
+    "url",
+    "fetch",
+    "cadence",
+    "topicHints"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "official_changelog",
+        "github_release",
+        "github_raw_changelog",
+        "discord",
+        "youtube",
+        "paper",
+        "blog",
+        "repo_activity",
+        "community_post"
+      ]
+    },
+    "trustTier": {
+      "type": "string",
+      "enum": ["official", "maintainer", "community", "rumor"]
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "url": { "type": "string", "format": "uri" },
+    "fetch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "format"],
+      "properties": {
+        "type": { "const": "http_get" },
+        "format": {
+          "type": "string",
+          "enum": ["html", "markdown", "json", "rss", "atom"]
+        },
+        "githubApi": { "type": "boolean" }
+      }
+    },
+    "cadence": {
+      "type": "string",
+      "enum": ["hourly", "daily", "weekly"]
+    },
+    "topicHints": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "model_release",
+          "agent_runtime",
+          "coding_agent",
+          "mcp",
+          "security",
+          "evals",
+          "research",
+          "infra",
+          "local_models",
+          "voice_ui",
+          "workflow"
+        ]
+      }
+    }
+  }
+}
