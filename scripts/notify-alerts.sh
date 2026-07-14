@@ -84,6 +84,7 @@ LIMIT 500;
 RESULT=$(sqlite3 -separator $'\t' "$LEDGER_DB" "$SQL" 2>/dev/null)
 
 if [[ -z "$RESULT" ]]; then
+  "$HOME/bin/hc-ping" notify-alerts
   exit 0
 fi
 
@@ -125,4 +126,5 @@ done <<<"$RESULT"
 if [[ "$fired" -gt 0 ]]; then
   echo "notify-alerts: fired $fired notification(s)"
 fi
+"$HOME/bin/hc-ping" notify-alerts
 exit 0
