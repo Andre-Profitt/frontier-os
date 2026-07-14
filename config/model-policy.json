@@ -1,7 +1,7 @@
 {
   "$schema": "../schemas/model-policy.schema.json",
   "version": "v1",
-  "summary": "Task-class → model routing for the inference broker. Patch R (2026-04-28): brain-on-NIM policy shift — NIM-first across ALL classes for speed + battery + GPU freedom; local Ollama retained as offline / cost fallback only. Was Patch N hybrid local-first.",
+  "summary": "Task-class \u2192 model routing for the inference broker. Patch S (2026-07-14): local-first revert \u2014 NIM chat completions hang indefinitely for this account (verified: /v1/models 200 in 0.14s, but 280s zero-byte on nano-8b AND llama-3.3-70b). NIM entries retained as fallbacks so recovery is a no-op. Was Patch R NIM-first.",
   "providers": {
     "nvidia-nim": {
       "enabled": true,
@@ -29,19 +29,38 @@
   },
   "classes": {
     "routine_summary": {
-      "summary": "Cheap log compression + pack rendering. Patch Q (2026-04-27): NIM kimi-k2-instruct primary because it's fast on the free tier (~0.5s smoke vs local 7B's 1-3s for short prompts on M-series Mac) and free for routine work; qwen2.5:7b stays as offline fallback.",
+      "summary": "Cheap log compression + pack rendering. Patch Q (2026-04-27): NIM kimi-k2-instruct primary because it's fast on the free tier (~0.5s smoke vs local 7B's 1-3s for short prompts on M-series Mac) and free for routine work; qwen2.5:7b stays as offline fallback. Patch S (2026-07-14): ollama-local promoted to primary \u2014 NIM account hangs on all completions; see top-level summary.",
       "models": [
+        {
+          "provider": "ollama-local",
+          "model": "qwen2.5:7b"
+        },
         {
           "provider": "nvidia-nim",
           "model": "moonshotai/kimi-k2-instruct-0905"
-        },
-        { "provider": "ollama-local", "model": "qwen2.5:7b" }
+        }
       ],
       "maxParallel": 4
     },
     "patch_builder": {
-      "summary": "Generate code patches in isolated worktrees. Patch R (2026-04-28): flipped to NIM-first per Andre's brain-on-NIM decision. Reasoning: M4 Max running 14b/72b coder models drains battery and ties up the GPU for other work; NIM frontier coders (qwen3-coder-480b, kimi-k2, deepseek-v4-pro) respond in <2s on free tier. Local Ollama models retained as offline fallback. Earlier Patch M finding (qwen2.5-coder:14b 2/3 selectionRate) preceded the policy shift; revisit if NIM coder quality drops in eval. Patch N.2 quirk still applies: do NOT add qwen/qwen2.5-coder-32b-instruct (hangs >200s on completion).",
+      "summary": "Generate code patches in isolated worktrees. Patch R (2026-04-28): flipped to NIM-first per Andre's brain-on-NIM decision. Reasoning: M4 Max running 14b/72b coder models drains battery and ties up the GPU for other work; NIM frontier coders (qwen3-coder-480b, kimi-k2, deepseek-v4-pro) respond in <2s on free tier. Local Ollama models retained as offline fallback. Earlier Patch M finding (qwen2.5-coder:14b 2/3 selectionRate) preceded the policy shift; revisit if NIM coder quality drops in eval. Patch N.2 quirk still applies: do NOT add qwen/qwen2.5-coder-32b-instruct (hangs >200s on completion). Patch S (2026-07-14): ollama-local promoted to primary \u2014 NIM account hangs on all completions; see top-level summary.",
       "models": [
+        {
+          "provider": "ollama-local",
+          "model": "qwen2.5-coder:14b"
+        },
+        {
+          "provider": "ollama-local",
+          "model": "qwen2.5:72b"
+        },
+        {
+          "provider": "ollama-local",
+          "model": "aegis-main:latest"
+        },
+        {
+          "provider": "ollama-local",
+          "model": "dolphin-llama3:70b"
+        },
         {
           "provider": "nvidia-nim",
           "model": "qwen/qwen3-coder-480b-a35b-instruct"
@@ -50,11 +69,10 @@
           "provider": "nvidia-nim",
           "model": "moonshotai/kimi-k2-instruct-0905"
         },
-        { "provider": "nvidia-nim", "model": "deepseek-ai/deepseek-v4-pro" },
-        { "provider": "ollama-local", "model": "qwen2.5-coder:14b" },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" },
-        { "provider": "ollama-local", "model": "aegis-main:latest" },
-        { "provider": "ollama-local", "model": "dolphin-llama3:70b" }
+        {
+          "provider": "nvidia-nim",
+          "model": "deepseek-ai/deepseek-v4-pro"
+        }
       ],
       "maxParallel": 1,
       "gates": {
@@ -65,32 +83,60 @@
       }
     },
     "adversarial_review": {
-      "summary": "Attack a candidate patch. Patch P (2026-04-27): reviewers now distribute round-robin across this list (was: all reviewers used the policy primary). Order matters — reviewer-i uses models[i % len]. kimi-k2-thinking first because it's reasoning-tuned + JSON-disciplined; deepseek-coder local was at 50% validity rate as primary in the prior arrangement and kept producing prose paraphrases instead of structured findings, blocking the noBlockingReview gate on otherwise-clean patches.",
+      "summary": "Attack a candidate patch. Patch P (2026-04-27): reviewers now distribute round-robin across this list (was: all reviewers used the policy primary). Order matters \u2014 reviewer-i uses models[i % len]. kimi-k2-thinking first because it's reasoning-tuned + JSON-disciplined; deepseek-coder local was at 50% validity rate as primary in the prior arrangement and kept producing prose paraphrases instead of structured findings, blocking the noBlockingReview gate on otherwise-clean patches. Patch S (2026-07-14): ollama-local promoted to primary \u2014 NIM account hangs on all completions; see top-level summary.",
       "models": [
-        { "provider": "nvidia-nim", "model": "moonshotai/kimi-k2-thinking" },
-        { "provider": "nvidia-nim", "model": "z-ai/glm-5.1" },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" },
-        { "provider": "ollama-local", "model": "deepseek-coder:33b-instruct" },
-        { "provider": "ollama-local", "model": "dolphin-llama3:70b" }
+        {
+          "provider": "ollama-local",
+          "model": "qwen2.5:72b"
+        },
+        {
+          "provider": "ollama-local",
+          "model": "deepseek-coder:33b-instruct"
+        },
+        {
+          "provider": "ollama-local",
+          "model": "dolphin-llama3:70b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model": "moonshotai/kimi-k2-thinking"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model": "z-ai/glm-5.1"
+        }
       ],
       "maxParallel": 1
     },
     "research_extraction": {
-      "summary": "Read sources and produce a claim ledger. Patch Q (2026-04-27): NIM kimi-k2-instruct primary — it's instruction-tuned, handles long-context source documents better than qwen2.5:7b, and stays cheap on the free tier. Local qwen2.5:72b is the offline fallback (slow but capable).",
+      "summary": "Read sources and produce a claim ledger. Patch Q (2026-04-27): NIM kimi-k2-instruct primary \u2014 it's instruction-tuned, handles long-context source documents better than qwen2.5:7b, and stays cheap on the free tier. Local qwen2.5:72b is the offline fallback (slow but capable). Patch S (2026-07-14): ollama-local promoted to primary \u2014 NIM account hangs on all completions; see top-level summary.",
       "models": [
+        {
+          "provider": "ollama-local",
+          "model": "qwen2.5:72b"
+        },
         {
           "provider": "nvidia-nim",
           "model": "moonshotai/kimi-k2-instruct-0905"
-        },
-        { "provider": "ollama-local", "model": "qwen2.5:72b" }
+        }
       ],
       "maxParallel": 1
     },
     "merge_arbiter": {
-      "summary": "Final merge recommendation. Patch R (2026-04-28): wired with NIM kimi-k2-thinking primary (reasoning-tuned, JSON-disciplined, same model adversarial_review uses) and glm-5.1 as second-opinion. No local fallback by design — merge arbitration is high-stakes, NIM frontier or fail explicitly.",
+      "summary": "Final merge recommendation. Patch R (2026-04-28): wired with NIM kimi-k2-thinking primary (reasoning-tuned, JSON-disciplined, same model adversarial_review uses) and glm-5.1 as second-opinion. No local fallback by design \u2014 merge arbitration is high-stakes, NIM frontier or fail explicitly. Patch S (2026-07-14): ollama-local promoted to primary \u2014 NIM account hangs on all completions; see top-level summary.",
       "models": [
-        { "provider": "nvidia-nim", "model": "moonshotai/kimi-k2-thinking" },
-        { "provider": "nvidia-nim", "model": "z-ai/glm-5.1" }
+        {
+          "provider": "ollama-local",
+          "model": "qwen2.5:72b"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model": "moonshotai/kimi-k2-thinking"
+        },
+        {
+          "provider": "nvidia-nim",
+          "model": "z-ai/glm-5.1"
+        }
       ],
       "maxParallel": 1
     }
