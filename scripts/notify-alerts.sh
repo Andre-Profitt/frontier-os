@@ -59,7 +59,7 @@ case "$MIN_SEVERITY" in
   *)        echo "error: bad --min-severity: $MIN_SEVERITY" >&2; exit 64 ;;
 esac
 
-SINCE_ISO=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=$LOOKBACK_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+SINCE_ISO=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=$LOOKBACK_HOURS)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 
 # Read alert events from the ledger as TSV. json_extract keeps us from
 # parsing JSON in bash. `PRAGMA query_only=1` blocks writes at the session
@@ -73,6 +73,7 @@ SELECT
   COALESCE(json_extract(payload, '\$.severity'), 'info')   AS severity,
   COALESCE(json_extract(payload, '\$.category'), 'health') AS category,
   COALESCE(json_extract(payload, '\$.source'),   actor, 'unknown') AS source,
+  COALESCE(json_extract(payload, '\$.dedupeKey'), '')      AS dedupe_key,
   COALESCE(json_extract(payload, '\$.summary'),  '')       AS summary
 FROM events
 WHERE kind = 'alert'
@@ -87,8 +88,12 @@ if [[ -z "$RESULT" ]]; then
 fi
 
 fired=0
-while IFS=$'\t' read -r alert_id severity category source summary; do
+while IFS=$'\t' read -r alert_id severity category source dedupe_key summary; do
   [[ -z "$alert_id" ]] && continue
+  # Dedupe on the alert's dedupeKey when the producer set one — sources like
+  # work-radar mint a fresh alertId per run for the same ongoing condition,
+  # and alertId-level dedupe turned each of those into a fresh banner.
+  state_key="${dedupe_key:-$alert_id}"
   # Filter below threshold at bash level so we don't build the rank
   # comparison into the SQL.
   case "$severity" in
@@ -101,7 +106,7 @@ while IFS=$'\t' read -r alert_id severity category source summary; do
   esac
   [[ "$rank" -lt "$MIN_RANK" ]] && continue
   # Dedupe against history file.
-  if grep -Fxq "$alert_id" "$STATE_FILE"; then
+  if grep -Fxq "$state_key" "$STATE_FILE"; then
     continue
   fi
   severity_upper=$(printf '%s' "$severity" | tr '[:lower:]' '[:upper:]')
@@ -112,7 +117,7 @@ while IFS=$'\t' read -r alert_id severity category source summary; do
     safe_summary=$(printf '%s' "$summary" | tr '\n' ' ' | sed 's/"/\\"/g')
     safe_title=$(printf '%s' "$title" | sed 's/"/\\"/g')
     osascript -e "display notification \"$safe_summary\" with title \"$safe_title\"" >/dev/null 2>&1 || true
-    echo "$alert_id" >> "$STATE_FILE"
+    echo "$state_key" >> "$STATE_FILE"
   fi
   fired=$((fired + 1))
 done <<<"$RESULT"
